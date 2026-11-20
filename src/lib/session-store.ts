@@ -119,3 +119,25 @@ export async function saveSessionsToDb(
     // ignore storage failures (e.g., strict private browsing)
   }
 }
+
+export async function clearAllSessionsFromDb(): Promise<void> {
+  purgeLegacyDatabase();
+  try {
+    const db = await openSessionDb();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      store.delete(RECORD_KEY);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+    });
+  } catch {
+    // ignore storage failures
+  }
+}

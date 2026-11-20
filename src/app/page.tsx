@@ -6,6 +6,7 @@ import { DeskCanvas, type LiveSpeechBubble } from "@/components/DeskCanvas";
 import { DeskSequelModal } from "@/components/DeskSequelModal";
 import { EngineDrawer } from "@/components/EngineDrawer";
 import { GroupChatPanel } from "@/components/GroupChatPanel";
+import { OnboardingTour } from "@/components/OnboardingTour";
 import { ShareCardModal } from "@/components/ShareCardModal";
 import { SidebarRail } from "@/components/SidebarRail";
 import {
@@ -41,7 +42,32 @@ import {
 import { compressImageToDataUrl, cropObjectAvatars } from "@/lib/crop-avatars";
 import { getCopy } from "@/lib/i18n";
 import { CURATED_SAMPLES, type SampleDesk } from "@/lib/samples";
-import { loadSavedSessions, saveSessionsToDb } from "@/lib/session-store";
+import {
+  clearAllSessionsFromDb,
+  loadSavedSessions,
+  saveSessionsToDb,
+} from "@/lib/session-store";
+
+function createBlankSession(title: string): DeskSession {
+  return {
+    id: `sess-${Date.now().toString(36)}`,
+    title,
+    imageSrc: "",
+    afterImageSrc: null,
+    groupName: title,
+    resentmentScore: 0,
+    verdict: "",
+    mostLikelyToLeave: "",
+    objects: [],
+    messages: [],
+    visibleCount: 0,
+    hasBrokenIn: false,
+    ownerSteppedAway: false,
+    activeSampleId: null,
+    isBlank: true,
+    createdAt: Date.now(),
+  };
+}
 
 function nowHHMM(): string {
   const d = new Date();
@@ -165,7 +191,8 @@ export default function HomePage() {
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [activeDeviceIdx, setActiveDeviceIdx] = useState(0);
 
-  // Modals
+  // Modals & Onboarding
+  const [isTourOpen, setIsTourOpen] = useState(false);
   const [isSequelOpen, setIsSequelOpen] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
@@ -193,6 +220,7 @@ export default function HomePage() {
   // Hydrate persisted preferences, IndexedDB sessions & default English sample avatars
   useEffect(() => {
     let resolvedLocale: Locale = "en";
+    let tourTimer: ReturnType<typeof setTimeout> | null = null;
     try {
       const savedKey = localStorage.getItem("desktea_api_key") || "";
       const savedModel =
@@ -213,6 +241,10 @@ export default function HomePage() {
       const savedLocale = localStorage.getItem("desktea_locale");
       if (savedLocale === "zh" || savedLocale === "en") {
         resolvedLocale = savedLocale;
+      }
+
+      if (localStorage.getItem("desktea_tour_done") !== "1") {
+        tourTimer = setTimeout(() => setIsTourOpen(true), 450);
       }
     } catch {
       // ignore storage failure
@@ -279,6 +311,7 @@ export default function HomePage() {
 
     return () => {
       cancelled = true;
+      if (tourTimer) clearTimeout(tourTimer);
     };
   }, [defaultSample]);
 
@@ -429,24 +462,7 @@ export default function HomePage() {
       stopCameraStream();
       setIsLiveCamActive(false);
     }
-    const blank: DeskSession = {
-      id: `sess-${Date.now().toString(36)}`,
-      title: t.newSession,
-      imageSrc: "",
-      afterImageSrc: null,
-      groupName: t.newSession,
-      resentmentScore: 0,
-      verdict: "",
-      mostLikelyToLeave: "",
-      objects: [],
-      messages: [],
-      visibleCount: 0,
-      hasBrokenIn: false,
-      ownerSteppedAway: false,
-      activeSampleId: null,
-      isBlank: true,
-      createdAt: Date.now(),
-    };
+    const blank = createBlankSession(t.newSession);
     setSessions((prev) => [blank, ...prev]);
     loadSessionIntoView(blank);
   }, [isLiveCamActive, stopCameraStream, t.newSession, loadSessionIntoView]);
@@ -468,34 +484,81 @@ export default function HomePage() {
 
   const handleDeleteSession = useCallback(
     (id: string) => {
-      if (sessions.length <= 1) return;
       const remaining = sessions.filter((s) => s.id !== id);
+      if (remaining.length === 0) {
+        if (isLiveCamActive) {
+          stopCameraStream();
+          setIsLiveCamActive(false);
+        }
+        const blank = createBlankSession(t.newSession);
+        setSessions([blank]);
+        loadSessionIntoView(blank);
+        return;
+      }
       setSessions(remaining);
       if (id === currentSessionId && remaining[0]) {
         loadSessionIntoView(remaining[0]);
       }
     },
-    [sessions, currentSessionId, loadSessionIntoView]
+    [
+      sessions,
+      currentSessionId,
+      isLiveCamActive,
+      stopCameraStream,
+      t.newSession,
+      loadSessionIntoView,
+    ]
   );
 
-  const handleClearChat = useCallback(() => {
-    const sample = activeSampleId
-      ? CURATED_SAMPLES.find((s) => s.id === activeSampleId)
-      : null;
-    if (sample) {
-      setMessages(sample.analysis[locale].messages);
-      setVisibleCount(sample.analysis[locale].messages.length);
-      setResentmentScore(sample.analysis[locale].resentmentScore);
-    } else {
-      setMessages([]);
-      setVisibleCount(0);
+  const handleClearAllHistory = useCallback(async () => {
+    if (isLiveCamActive) {
+      stopCameraStream();
+      setIsLiveCamActive(false);
     }
+    await clearAllSessionsFromDb();
+    const fresh = makeSampleSession(defaultSample, locale);
+    setSessions([fresh]);
+    await loadSessionIntoView(fresh);
+    setErrorMsg(null);
+  }, [
+    isLiveCamActive,
+    stopCameraStream,
+    defaultSample,
+    locale,
+    loadSessionIntoView,
+  ]);
+
+  const handleClearChat = useCallback(() => {
+    setMessages([]);
+    setVisibleCount(0);
     setHasBrokenIn(false);
     setOwnerSteppedAway(false);
     idleChatterTurnsRef.current = 0;
     setSelectedObjectId(null);
     setIsReplaying(false);
-  }, [activeSampleId, locale]);
+  }, []);
+
+  const handleDeleteMessage = useCallback((msgId: string) => {
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === msgId);
+      if (idx === -1) return prev;
+      const next = prev.filter((m) => m.id !== msgId);
+      setVisibleCount((v) => {
+        if (idx < v) return Math.max(0, v - 1);
+        return Math.min(v, next.length);
+      });
+      return next;
+    });
+  }, []);
+
+  const handleFinishTour = useCallback(() => {
+    setIsTourOpen(false);
+    try {
+      localStorage.setItem("desktea_tour_done", "1");
+    } catch {
+      // ignore storage failure
+    }
+  }, []);
 
   const applyAnalysis = useCallback(
     async (plateUrl: string, analysis: DeskAnalysisResult, instant = false) => {
@@ -1689,9 +1752,9 @@ export default function HomePage() {
         onNewSession={handleNewSession}
         onSwitchSession={handleSwitchSession}
         onDeleteSession={handleDeleteSession}
-        onClearChat={handleClearChat}
+        onClearAllHistory={handleClearAllHistory}
         onSelectSample={handleSelectSample}
-        onToggleLocale={handleToggleLocale}
+        onOpenTour={() => setIsTourOpen(true)}
         onOpenSettings={() => {
           setDrawerPromptReason(null);
           setIsDrawerOpen(true);
@@ -1827,6 +1890,8 @@ export default function HomePage() {
           onRevealAll={handleRevealAll}
           onHoverMessage={setHoveredMessageId}
           onSendOwnerMessage={handleSendOwnerMessage}
+          onClearChat={handleClearChat}
+          onDeleteMessage={handleDeleteMessage}
         />
       </div>
 
@@ -1912,6 +1977,13 @@ export default function HomePage() {
         agyModel={agyModel}
         apiKey={apiKey}
         onSave={handleSaveEngine}
+      />
+
+      <OnboardingTour
+        isOpen={isTourOpen}
+        locale={locale}
+        onClose={handleFinishTour}
+        onComplete={handleFinishTour}
       />
     </div>
   );

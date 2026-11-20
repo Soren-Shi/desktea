@@ -1,6 +1,14 @@
 "use client";
 
-import { ArrowUp, AtSign, ChevronDown, Footprints, X } from "lucide-react";
+import {
+  ArrowUp,
+  AtSign,
+  ChevronDown,
+  Footprints,
+  Radio,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage, DeskObject, Locale, Tone } from "@/lib/ai/types";
 import { getCopy } from "@/lib/i18n";
@@ -37,6 +45,8 @@ interface GroupChatPanelProps {
   onRevealAll: () => void;
   onHoverMessage: (id: string | null) => void;
   onSendOwnerMessage: (text: string) => void;
+  onClearChat: () => void;
+  onDeleteMessage: (id: string) => void;
 }
 
 const TONES: Tone[] = ["roast", "corporate", "drama"];
@@ -109,6 +119,8 @@ export function GroupChatPanel({
   onRevealAll,
   onHoverMessage,
   onSendOwnerMessage,
+  onClearChat,
+  onDeleteMessage,
 }: GroupChatPanelProps) {
   const t = getCopy(locale);
   const [draft, setDraft] = useState("");
@@ -116,6 +128,17 @@ export function GroupChatPanel({
   const [mentionStartIdx, setMentionStartIdx] = useState<number>(-1);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [verdictExpanded, setVerdictExpanded] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timer = setTimeout(() => setConfirmClear(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmClear]);
+
+  useEffect(() => {
+    setConfirmClear(false);
+  }, [groupName, messages.length]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -302,12 +325,35 @@ export function GroupChatPanel({
                 {t.revealAll}
               </button>
             )}
+            {!isScanning && messages.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirmClear) {
+                    setConfirmClear(false);
+                    onClearChat();
+                  } else {
+                    setConfirmClear(true);
+                  }
+                }}
+                title={t.deleteChatBtn}
+                aria-label={confirmClear ? t.deleteChatConfirm : t.deleteChatBtn}
+                className={`flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors active:scale-[0.97] ${
+                  confirmClear
+                    ? "border-[var(--accent)]/45 bg-[var(--accent-soft)] text-[#FF8A80]"
+                    : "border-[var(--border)] bg-[var(--surface)] text-[var(--ink-secondary)] hover:border-[var(--border-strong)] hover:bg-[var(--surface-hover)] hover:text-white"
+                }`}
+              >
+                <Trash2 className="h-3 w-3 stroke-[1.75]" />
+                {confirmClear && <span>{t.deleteChatConfirm}</span>}
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Row 2: Member meta + Auto-Chat Toggle */}
+        {/* Row 2: Member meta + Prominent Auto-Chat Switch */}
         {!isScanning && objects.length > 0 && (
-          <div className="mt-1.5 flex items-center justify-between gap-2">
+          <div className="mt-2 flex items-center justify-between gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-x-2 text-[11.5px] text-[var(--ink-secondary)]">
               <span className="shrink-0 whitespace-nowrap">
                 {activeObjects.length} {t.membersSuffix}
@@ -321,23 +367,36 @@ export function GroupChatPanel({
             {objects.length >= 2 && (
               <button
                 type="button"
+                role="switch"
+                aria-checked={autoChatEnabled}
                 onClick={onToggleAutoChat}
                 title={autoChatEnabled ? t.autoChatOnTitle : t.autoChatOffTitle}
-                aria-pressed={autoChatEnabled}
-                className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors active:scale-[0.97] ${
+                className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] font-semibold transition-all active:scale-[0.97] ${
                   autoChatEnabled
-                    ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-300"
-                    : "border-[var(--border)] bg-[var(--surface)] text-[var(--ink-secondary)] hover:bg-[var(--surface-hover)] hover:text-white"
+                    ? "border-emerald-400/55 bg-emerald-500/18 text-emerald-200 shadow-[0_0_16px_rgba(16,185,129,0.22)]"
+                    : "border-[var(--border-strong)] bg-[#1B1C22] text-[#F2F4F8] hover:border-white/35 hover:bg-[#23252C]"
                 }`}
               >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${
-                    autoChatEnabled
-                      ? "animate-pulse bg-emerald-400"
-                      : "bg-[var(--ink-muted)]"
+                <Radio
+                  className={`h-3 w-3 stroke-[2] ${
+                    autoChatEnabled ? "animate-pulse text-emerald-300" : "text-[#9A9FA8]"
                   }`}
                 />
                 <span>{t.autoChatLabel}</span>
+                <span
+                  aria-hidden="true"
+                  className={`flex h-3.5 w-6 items-center rounded-full p-0.5 transition-colors ${
+                    autoChatEnabled
+                      ? "justify-end bg-emerald-400"
+                      : "justify-start bg-[#32353C]"
+                  }`}
+                >
+                  <span
+                    className={`h-2.5 w-2.5 rounded-full transition-colors ${
+                      autoChatEnabled ? "bg-[#0A0A0A]" : "bg-[#D9DBDF]"
+                    }`}
+                  />
+                </span>
               </button>
             )}
           </div>
@@ -469,7 +528,13 @@ export function GroupChatPanel({
           </div>
         ) : displayed.length === 0 ? (
           <div className="flex h-full min-h-[220px] items-center justify-center px-4 text-center text-[13px] text-[var(--ink-muted)]">
-            {isLiveCamActive ? t.liveWaitFirst : t.blankStageSub}
+            {isLiveCamActive
+              ? t.liveWaitFirst
+              : objects.length > 0
+              ? locale === "zh"
+                ? "对话已清空 — 在下方发言或开启「自动闲聊」"
+                : "Chat cleared — reply below or toggle Auto-Chat"
+              : t.blankStageSub}
           </div>
         ) : (
           <>
@@ -540,9 +605,18 @@ export function GroupChatPanel({
 
               if (msg.isOwner) {
                 return (
-                  <div key={msg.id} className="msg-enter flex justify-end">
+                  <div key={msg.id} className="msg-enter group flex justify-end">
                     <div className="max-w-[82%] text-right">
                       <div className="mb-1 flex items-center justify-end gap-1.5 text-[11px] text-[var(--ink-muted)]">
+                        <button
+                          type="button"
+                          onClick={() => onDeleteMessage(msg.id)}
+                          aria-label={t.deleteMessageLabel}
+                          title={t.deleteMessageLabel}
+                          className="cursor-pointer rounded-full p-0.5 text-[var(--ink-muted)] opacity-60 transition-opacity hover:text-[var(--accent)] focus:opacity-100 lg:opacity-0 lg:group-hover:opacity-100"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
                         <span className="tabular-nums">{msg.timestamp}</span>
                         <span className="font-medium text-[var(--ink-secondary)]">
                           {t.ownerName}
@@ -580,13 +654,22 @@ export function GroupChatPanel({
                   </div>
 
                   <div className="min-w-0 max-w-[86%]">
-                    <div className="mb-1 flex items-baseline gap-2">
+                    <div className="mb-1 flex items-center gap-2">
                       <span className="text-[12px] font-medium text-[#B9BDC6]">
                         {msg.senderName}
                       </span>
                       <span className="text-[10.5px] tabular-nums text-[var(--ink-muted)]">
                         {msg.timestamp}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteMessage(msg.id)}
+                        aria-label={t.deleteMessageLabel}
+                        title={t.deleteMessageLabel}
+                        className="cursor-pointer rounded-full p-0.5 text-[var(--ink-muted)] opacity-60 transition-opacity hover:text-[var(--accent)] focus:opacity-100 lg:opacity-0 lg:group-hover:opacity-100"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
                     </div>
 
                     {msg.replyToName &&

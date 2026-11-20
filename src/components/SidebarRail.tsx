@@ -1,14 +1,15 @@
 "use client";
 
 import {
+  HelpCircle,
   PanelLeft,
   PanelLeftClose,
-  RotateCcw,
   Settings2,
   SquarePen,
   Trash2,
   X,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { DeskSession, HealthStatus, Locale } from "@/lib/ai/types";
 import { getCopy } from "@/lib/i18n";
 import type { SampleDesk } from "@/lib/samples";
@@ -29,9 +30,9 @@ interface SidebarRailProps {
   onNewSession: () => void;
   onSwitchSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
-  onClearChat: () => void;
+  onClearAllHistory: () => void;
   onSelectSample: (sample: SampleDesk) => void;
-  onToggleLocale: () => void;
+  onOpenTour: () => void;
   onOpenSettings: () => void;
 }
 
@@ -81,12 +82,19 @@ export function SidebarRail({
   onNewSession,
   onSwitchSession,
   onDeleteSession,
-  onClearChat,
+  onClearAllHistory,
   onSelectSample,
-  onToggleLocale,
+  onOpenTour,
   onOpenSettings,
 }: SidebarRailProps) {
   const t = getCopy(locale);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+
+  useEffect(() => {
+    if (!confirmClearAll) return;
+    const timer = setTimeout(() => setConfirmClearAll(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmClearAll]);
 
   const modeBadge = hasCustomKey
     ? "Custom Key"
@@ -179,20 +187,27 @@ export function SidebarRail({
                 <span className="text-[11px] font-medium tracking-[0.02em] text-[var(--ink-muted)]">
                   {t.sidebarSessions}
                 </span>
-                {!isBlankSession && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClearChat();
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirmClearAll) {
+                      setConfirmClearAll(false);
+                      onClearAllHistory();
                       if (isMobileDrawer) onCloseMobile();
-                    }}
-                    title={t.clearChat}
-                    className="flex cursor-pointer items-center gap-1 rounded-full px-1.5 py-0.5 text-[10.5px] text-[var(--ink-secondary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-white"
-                  >
-                    <RotateCcw className="h-2.5 w-2.5" />
-                    <span>{t.clearChat}</span>
-                  </button>
-                )}
+                    } else {
+                      setConfirmClearAll(true);
+                    }
+                  }}
+                  title={t.clearAllHistory}
+                  className={`flex cursor-pointer items-center gap-1 rounded-full px-1.5 py-0.5 text-[10.5px] transition-colors ${
+                    confirmClearAll
+                      ? "bg-[var(--accent-soft)] font-medium text-[#FF8A80]"
+                      : "text-[var(--ink-secondary)] hover:bg-[var(--surface-hover)] hover:text-white"
+                  }`}
+                >
+                  <Trash2 className="h-2.5 w-2.5" />
+                  <span>{confirmClearAll ? t.clearAllConfirm : t.clearAllHistory}</span>
+                </button>
               </div>
 
               <div className="space-y-1">
@@ -238,19 +253,18 @@ export function SidebarRail({
                         </div>
                       </button>
 
-                      {sessions.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteSession(sess.id);
-                          }}
-                          aria-label="Delete session"
-                          className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--ink-muted)] opacity-0 transition-opacity hover:bg-white/10 hover:text-[var(--accent)] group-hover:opacity-100"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteSession(sess.id);
+                        }}
+                        title={t.deleteSessionLabel}
+                        aria-label={t.deleteSessionLabel}
+                        className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--ink-muted)] opacity-75 transition-opacity hover:bg-white/10 hover:text-[var(--accent)] lg:opacity-0 lg:group-hover:opacity-100"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
                     </div>
                   );
                 })}
@@ -365,11 +379,15 @@ export function SidebarRail({
         >
           <button
             type="button"
-            onClick={onToggleLocale}
-            title={locale === "zh" ? "Switch to English" : "切换为中文"}
-            className="flex h-8 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 text-[11px] font-medium text-[var(--ink-secondary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-white"
+            onClick={() => {
+              onOpenTour();
+              if (isMobileDrawer) onCloseMobile();
+            }}
+            title={t.tourHelpTitle}
+            aria-label={t.tourHelpTitle}
+            className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-secondary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-white"
           >
-            {locale === "zh" ? "EN" : "中"}
+            <HelpCircle className="h-3.5 w-3.5 stroke-[1.75]" />
           </button>
           <button
             type="button"
