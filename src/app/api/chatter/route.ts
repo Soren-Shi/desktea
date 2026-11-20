@@ -1,0 +1,56 @@
+import { NextResponse } from "next/server";
+import { enforcePublicQuota, generateDeskChatter, ProviderError } from "@/lib/ai";
+import type { ChatMessage, DeskObject, Locale, Tone } from "@/lib/ai/types";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
+const VALID_TONES = new Set<Tone>(["roast", "corporate", "drama"]);
+
+export async function POST(req: Request) {
+  try {
+    const body = (await req.json()) as {
+      objects?: DeskObject[];
+      history?: ChatMessage[];
+      ownerPresent?: boolean;
+      localTimeContext?: string;
+      locale?: Locale;
+      tone?: Tone;
+      model?: string;
+      apiKey?: string;
+    };
+
+    if (!Array.isArray(body.objects) || body.objects.length === 0) {
+      return NextResponse.json({ error: "Missing desk objects" }, { status: 400 });
+    }
+
+    enforcePublicQuota(req, "chat", body.apiKey);
+
+    const tone: Tone = body.tone && VALID_TONES.has(body.tone) ? body.tone : "roast";
+    const result = await generateDeskChatter({
+      locale: body.locale === "en" ? "en" : "zh",
+      tone,
+      objects: body.objects,
+      history: Array.isArray(body.history) ? body.history : [],
+      ownerPresent: Boolean(body.ownerPresent),
+      localTimeContext: body.localTimeContext,
+      model: body.model,
+      apiKey: body.apiKey,
+    });
+
+    return NextResponse.json(result);
+  } catch (err) {
+    if (err instanceof ProviderError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code, retryAfterSec: err.retryAfterSec },
+        { status: err.status }
+      );
+    }
+    const message =
+      err instanceof Error ? err.message : "Failed to generate chatter";
+    return NextResponse.json(
+      { error: message, code: "PROVIDER_ERROR" },
+      { status: 500 }
+    );
+  }
+}
