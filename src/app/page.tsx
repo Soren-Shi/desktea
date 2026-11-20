@@ -21,6 +21,7 @@ import {
   canObjectSpeak,
   getLocalTimeContext,
   getObjectStatus,
+  needsDeskVisionForReply,
 } from "@/lib/ai/normalize";
 import type {
   AddObjectResult,
@@ -1395,7 +1396,9 @@ export default function HomePage() {
           isSystem: true,
         }));
 
-        setMessages((prev) => [...prev, ...actionSysMsgs, ...data.messages]);
+        const realNow = nowHHMM();
+        const stampedMsgs = data.messages.map((m) => ({ ...m, timestamp: realNow }));
+        setMessages((prev) => [...prev, ...actionSysMsgs, ...stampedMsgs]);
       } catch (err) {
         if (opts?.bypassCap) {
           setErrorMsg(
@@ -1581,6 +1584,30 @@ export default function HomePage() {
 
     try {
       const cleanKey = apiKey.trim();
+      const activePlateSrc = afterImageSrc || imageSrc;
+      const shouldAttachPhoto =
+        Boolean(activePlateSrc) && needsDeskVisionForReply(text, objects);
+      let replyImageBase64: string | undefined;
+      let replyMimeType: string | undefined;
+      if (shouldAttachPhoto && activePlateSrc) {
+        try {
+          if (activePlateSrc.startsWith("data:")) {
+            replyImageBase64 = activePlateSrc;
+            replyMimeType = "image/jpeg";
+          } else {
+            const compressed = await compressImageToDataUrl(
+              activePlateSrc,
+              1024,
+              0.82
+            );
+            replyImageBase64 = compressed.dataUrl;
+            replyMimeType = compressed.mimeType;
+          }
+        } catch {
+          // Proceed text-only if image compression fails
+        }
+      }
+
       let data: ReplyResult;
       if (cleanKey && !cleanKey.startsWith("sk-or-")) {
         data = await browserReplyToOwner({
@@ -1593,6 +1620,8 @@ export default function HomePage() {
           ownerMessage: text,
           isFirstBreach,
           mentionedObjectIds: mentionedIds,
+          imageBase64: replyImageBase64,
+          mimeType: replyMimeType,
           model: agyModel,
         });
       } else {
@@ -1609,6 +1638,9 @@ export default function HomePage() {
             isFirstBreach,
             mentionedObjectIds: mentionedIds,
             localTimeContext: getLocalTimeContext(locale),
+            ...(replyImageBase64
+              ? { imageBase64: replyImageBase64, mimeType: replyMimeType }
+              : {}),
             model: agyModel,
             ...(cleanKey ? { apiKey: cleanKey } : {}),
           }),
@@ -1628,6 +1660,15 @@ export default function HomePage() {
         Math.max(0, Math.min(100, prev + (data.tensionDelta || 0)))
       );
 
+      // Crop avatars & add any newly visually-discovered objects from the photo!
+      let croppedNewFromReply: DeskObject[] = [];
+      if (data.newObjects && data.newObjects.length > 0 && activePlateSrc) {
+        croppedNewFromReply = await cropObjectAvatars(
+          activePlateSrc,
+          data.newObjects
+        );
+      }
+
       const renameAct = data.actions?.find(
         (a) => a.type === "rename_group" && a.value
       );
@@ -1635,27 +1676,57 @@ export default function HomePage() {
         setGroupName(renameAct.value);
       }
       if (
+        croppedNewFromReply.length > 0 ||
         (data.actions && data.actions.length > 0) ||
         (data.objectUpdates && data.objectUpdates.length > 0)
       ) {
-        setObjects((prev) =>
-          applyLivingEffectsToObjects(prev, data.actions, data.objectUpdates)
-        );
+        setObjects((prev) => [
+          ...applyLivingEffectsToObjects(prev, data.actions, data.objectUpdates),
+          ...croppedNewFromReply,
+        ]);
         if (data.actions?.some((a) => a.type === "kick" || a.type === "leave")) {
           setSelectedObjectId(null);
         }
       }
+
+      const realNow = nowHHMM();
+      const newJoinSysMsgs: ChatMessage[] =
+        croppedNewFromReply.length > 0
+          ? [
+              {
+                id: `sys-join-reply-${Date.now()}`,
+                senderId: "system",
+                senderName: "SYSTEM",
+                text:
+                  locale === "zh"
+                    ? `[${croppedNewFromReply.map((o) => o.name).join("、")}] 被主人拉进了群聊`
+                    : `[${croppedNewFromReply.map((o) => o.name).join(", ")}] joined the chat`,
+                timestamp: realNow,
+                isSystem: true,
+              },
+            ]
+          : [];
 
       const actionSysMsgs: ChatMessage[] = (data.actions || []).map((a, idx) => ({
         id: `sys-act-${Date.now()}-${idx}`,
         senderId: "system",
         senderName: "SYSTEM",
         text: a.systemNotice,
-        timestamp: nowHHMM(),
+        timestamp: realNow,
         isSystem: true,
       }));
 
-      setMessages((prev) => [...prev, ...actionSysMsgs, ...data.messages]);
+      const stampedMsgs = data.messages.map((m) => ({
+        ...m,
+        timestamp: realNow,
+      }));
+
+      setMessages((prev) => [
+        ...prev,
+        ...newJoinSysMsgs,
+        ...actionSysMsgs,
+        ...stampedMsgs,
+      ]);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Failed to send reply");
     } finally {

@@ -130,24 +130,48 @@ export const REPLY_SCHEMA = {
     },
     actions: GROUP_ACTIONS_SCHEMA,
     objectUpdates: OBJECT_UPDATES_SCHEMA,
-    messages: {
+    newObjects: {
       type: "array",
       description:
-        "1 to 4 organic group-chat messages — mix brief direct replies, side-whispers between objects, or object-vs-object arguments sparked by the owner.",
+        "ONLY when the desk photo is attached AND the owner explicitly asks to pull/invite/add unboxed visible items from the photo into the group chat: 0 to 3 newly spotted distinct items with tight box_2d [ymin, xmin, ymax, xmax] (0..1000). Otherwise MUST be empty array [].",
       items: {
         type: "object",
         properties: {
-          senderId: { type: "string", description: "Must match one of the active speaking objects[].id values." },
-          text: { type: "string", description: "Sharp, funny immediate reaction inside the group chat." },
+          id: { type: "string", description: "Short slug id like obj-add-1." },
+          name: { type: "string", description: "Specific evocative name of the newly spotted item." },
+          roleTag: { type: "string", description: "Short 2-5 word role title." },
+          archetype: {
+            type: "string",
+            enum: ["laborer", "dust", "consumable", "observer"],
+          },
+          personality: { type: "string", description: "One-line attitude/grudge." },
+          box_2d: {
+            type: "array",
+            description: "Tight 2D bounding box [ymin, xmin, ymax, xmax] normalized 0..1000.",
+            items: { type: "integer" },
+          },
+        },
+        required: ["id", "name", "roleTag", "archetype", "personality", "box_2d"],
+      },
+    },
+    messages: {
+      type: "array",
+      description:
+        "1 to 4 organic, NON-REPETITIVE group-chat messages directly addressing the newest owner message (including newly added items from newObjects if any).",
+      items: {
+        type: "object",
+        properties: {
+          senderId: { type: "string", description: "Must match an active speaking object id or a newly added newObjects[].id." },
+          text: { type: "string", description: "Fresh, sharp, funny reaction staying strictly in character (NEVER copy previous turns)." },
           replyToName: { type: "string", description: "Target name or empty string." },
           reaction: { type: "string", description: "Single emoji reaction or empty string." },
-          timestamp: { type: "string", description: "Timestamp slightly after the last message." },
+          timestamp: { type: "string", description: "Current HH:MM time matching CURRENT REAL TIME (never in the future)." },
         },
         required: ["senderId", "text", "replyToName", "reaction", "timestamp"],
       },
     },
   },
-  required: ["tensionDelta", "actions", "objectUpdates", "messages"],
+  required: ["tensionDelta", "actions", "objectUpdates", "newObjects", "messages"],
 } as const;
 
 export const DIFF_SCHEMA = {

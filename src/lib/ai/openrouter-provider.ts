@@ -7,10 +7,13 @@ export const DEFAULT_OPENROUTER_VISION_MODEL =
   process.env.OPENROUTER_MODEL ||
   "google/gemini-3.1-flash-lite";
 
+const rawEnvChatModel =
+  process.env.OPENROUTER_CHAT_MODEL || process.env.OPENROUTER_MODEL;
+
 export const DEFAULT_OPENROUTER_CHAT_MODEL =
-  process.env.OPENROUTER_CHAT_MODEL ||
-  process.env.OPENROUTER_MODEL ||
-  "google/gemini-2.5-flash-lite";
+  !rawEnvChatModel || rawEnvChatModel === "google/gemini-2.5-flash-lite"
+    ? "google/gemini-3.1-flash-lite"
+    : rawEnvChatModel;
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_TIMEOUT_MS = 55_000;

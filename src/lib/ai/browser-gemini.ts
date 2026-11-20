@@ -1,6 +1,8 @@
 import {
   clampBox2D,
+  dedupeParrotedMessages,
   filterMessagesAfterActions,
+  filterNewObjectsAgainstExisting,
   getLocalTimeContext,
   normalizeGroupActions,
   normalizeMessages,
@@ -65,6 +67,7 @@ interface RawReplyPayload {
   tensionDelta: number;
   actions?: RawGroupAction[];
   objectUpdates?: RawObjectUpdate[];
+  newObjects?: RawObject[];
   messages: RawMessage[];
 }
 
@@ -216,6 +219,8 @@ export async function browserReplyToOwner(params: {
   ownerMessage: string;
   isFirstBreach: boolean;
   mentionedObjectIds?: string[];
+  imageBase64?: string;
+  mimeType?: string;
   model?: string;
 }): Promise<ReplyResult> {
   const mentionedIds = resolveMentionedObjectIds(
@@ -223,6 +228,10 @@ export async function browserReplyToOwner(params: {
     params.ownerMessage,
     params.mentionedObjectIds
   );
+  const hasImage = Boolean(params.imageBase64);
+  const nextStartIdx =
+    params.objects.reduce((m, o) => Math.max(m, o.index), 0) + 1;
+
   const res = await callBrowserGeminiStructured<RawReplyPayload>({
     apiKey: params.apiKey,
     prompt: buildReplyPrompt({
@@ -235,20 +244,44 @@ export async function browserReplyToOwner(params: {
       isFirstBreach: params.isFirstBreach,
       mentionedObjectIds: mentionedIds,
       localTimeContext: getLocalTimeContext(params.locale),
+      hasImage,
     }),
     schema: REPLY_SCHEMA as unknown as Record<string, unknown>,
+    images:
+      hasImage && params.imageBase64
+        ? [{ base64: params.imageBase64, mimeType: params.mimeType || "image/jpeg" }]
+        : undefined,
     model: params.model,
   });
 
-  const actions = normalizeGroupActions(res.data.actions, params.objects, params.locale);
-  const objectUpdates = normalizeObjectUpdates(res.data.objectUpdates, params.objects);
-  const rawMsgs = normalizeMessages(res.data.messages, params.objects, "reply");
-  const messages = filterMessagesAfterActions(rawMsgs, params.objects, actions);
+  const rawNewList = hasImage && Array.isArray(res.data.newObjects) ? res.data.newObjects : [];
+  const newObjects = filterNewObjectsAgainstExisting(
+    rawNewList,
+    params.objects,
+    nextStartIdx
+  );
+  const rawToCanonId = new Map<string, string>();
+  rawNewList.forEach((raw) => {
+    const matched = newObjects.find((n) => n.name === raw.name);
+    if (raw.id && matched) rawToCanonId.set(raw.id, matched.id);
+  });
+  const remappedRawMsgs = (res.data.messages || []).map((m) => ({
+    ...m,
+    senderId: rawToCanonId.get(m.senderId) || m.senderId,
+  }));
+
+  const allObjects = [...params.objects, ...newObjects];
+  const actions = normalizeGroupActions(res.data.actions, allObjects, params.locale);
+  const objectUpdates = normalizeObjectUpdates(res.data.objectUpdates, allObjects);
+  const rawMsgs = normalizeMessages(remappedRawMsgs, allObjects, "reply");
+  const filteredMsgs = filterMessagesAfterActions(rawMsgs, allObjects, actions);
+  const messages = dedupeParrotedMessages(filteredMsgs, params.history);
 
   return {
     tensionDelta: Math.max(-20, Math.min(20, Math.round(res.data.tensionDelta))),
     actions,
     objectUpdates,
+    newObjects,
     messages,
     provider: "gemini",
     model: res.model,

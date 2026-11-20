@@ -377,6 +377,112 @@ export function reconcileDiffAudits(params: {
   };
 }
 
+export function needsDeskVisionForReply(
+  ownerMessage: string,
+  objects: DeskObject[]
+): boolean {
+  const text = ownerMessage.trim().toLowerCase();
+  if (!text) return false;
+
+  // If user is clearly inviting back an ALREADY-KICKED member by name, text-only is enough
+  const mentionsKicked = objects.some(
+    (o) =>
+      getObjectStatus(o) === "kicked" &&
+      (text.includes(o.name.toLowerCase()) || text.includes(`@${o.name.toLowerCase()}`))
+  );
+
+  // Pull/invite/add unboxed items from the desk photo (including common typo "拉近群聊")
+  const inviteOrAddRe =
+    /(拉进|拉近|拉入|拉进来|拉进群|加进|加群|圈进|放进群|新成员|漏了|漏识别|没识别|没框|还有.{0,6}(个|只|盆|杯|本|把|台|瓶|件|株|植物|多肉|东西|物品)|把.{1,14}(也|都)?(拉|加|圈|弄)进|pull.{0,24}(in|into)|add.{0,24}(to (the )?chat|in)|invite.{0,24}(on the desk|other|more|new)|missed|two more|other (one|two|plant|item|cup|mug))/i;
+  if (inviteOrAddRe.test(text) && !mentionsKicked) {
+    return true;
+  }
+
+  // Direct visual pointing / inspection questions about the desk photo
+  const visualQueryRe =
+    /(照片里|图里|桌面上还有|桌上还有|左边那|右边那|后面那|角落里|上面写着|什么颜色|看看桌上|你旁边那|in the photo|on the desk|on the left|on the right|behind you|next to you|what is that|spot the)/i;
+  return visualQueryRe.test(text);
+}
+
+function normalizeForSimilarity(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[\s，。！？、,.!?;；:："'“”‘’()（）\[\]【】~～…\-—]/g, "");
+}
+
+export function dedupeParrotedMessages(
+  incoming: ChatMessage[],
+  history: ChatMessage[]
+): ChatMessage[] {
+  if (incoming.length <= 1) return incoming;
+  const recentAiNorms = history
+    .slice(-10)
+    .filter((m) => !m.isOwner && !m.isSystem)
+    .map((m) => normalizeForSimilarity(m.text))
+    .filter((s) => s.length >= 6);
+
+  const kept: ChatMessage[] = [];
+  for (const msg of incoming) {
+    if (msg.isSystem || msg.isOwner) {
+      kept.push(msg);
+      continue;
+    }
+    const norm = normalizeForSimilarity(msg.text);
+    const isParrot =
+      norm.length >= 6 &&
+      recentAiNorms.some(
+        (prev) =>
+          prev === norm ||
+          (Math.min(prev.length, norm.length) >= 10 &&
+            (prev.includes(norm) || norm.includes(prev)))
+      );
+    if (!isParrot) {
+      kept.push(msg);
+      recentAiNorms.push(norm);
+    }
+  }
+  return kept.length > 0 ? kept : incoming.slice(0, 1);
+}
+
+export function filterNewObjectsAgainstExisting(
+  rawNew: RawObject[] | undefined,
+  existingObjects: DeskObject[],
+  nextStartIdx: number
+): DeskObject[] {
+  if (!Array.isArray(rawNew) || rawNew.length === 0) return [];
+  const activeExisting = existingObjects.filter(
+    (o) => !o.removed && getObjectStatus(o) !== "gone"
+  );
+  const existingNames = new Set(
+    activeExisting.map((o) => o.name.trim().toLowerCase())
+  );
+
+  const accepted: DeskObject[] = [];
+  for (const cand of normalizeObjects(rawNew.slice(0, 3), nextStartIdx)) {
+    const overlapsExisting = activeExisting.some(
+      (ex) => computeBoxIoU(cand.box_2d, ex.box_2d) > 0.5
+    );
+    const overlapsAccepted = accepted.some(
+      (ac) => computeBoxIoU(cand.box_2d, ac.box_2d) > 0.5
+    );
+    if (overlapsExisting || overlapsAccepted) continue;
+    let uniqueName = cand.name;
+    if (existingNames.has(uniqueName.trim().toLowerCase())) {
+      uniqueName = `${cand.name} #${nextStartIdx + accepted.length}`;
+    }
+    existingNames.add(uniqueName.trim().toLowerCase());
+    accepted.push({
+      ...cand,
+      id: `obj-${nextStartIdx + accepted.length}-${Date.now().toString(36).slice(-4)}`,
+      index: nextStartIdx + accepted.length,
+      name: uniqueName,
+      status: "active",
+      isNew: false,
+    });
+  }
+  return accepted;
+}
+
 export function getLocalTimeContext(locale: Locale): string {
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, "0");

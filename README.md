@@ -21,7 +21,7 @@ Upload, paste, or point a live camera at your desk. Multimodal Gemini identifies
 ```env
 OPENROUTER_API_KEY=sk-or-v1-...
 OPENROUTER_VISION_MODEL=google/gemini-3.1-flash-lite
-OPENROUTER_CHAT_MODEL=google/gemini-2.5-flash-lite
+OPENROUTER_CHAT_MODEL=google/gemini-3.1-flash-lite
 DESKTEA_VISION_LIMIT_PER_HOUR=12
 DESKTEA_CHAT_LIMIT_PER_HOUR=40
 ```
@@ -46,7 +46,7 @@ To publish DeskTea live on X without keeping your local machine running:
 3. **Add Environment Variables in Vercel → Settings → Environment Variables**:
    - `OPENROUTER_API_KEY` = your OpenRouter API key (`sk-or-v1-...`)
    - `OPENROUTER_VISION_MODEL` = `google/gemini-3.1-flash-lite`
-   - `OPENROUTER_CHAT_MODEL` = `google/gemini-2.5-flash-lite`
+   - `OPENROUTER_CHAT_MODEL` = `google/gemini-3.1-flash-lite`
    - `DESKTEA_VISION_LIMIT_PER_HOUR` = `12`
    - `DESKTEA_CHAT_LIMIT_PER_HOUR` = `40`
    - `NEXT_PUBLIC_SITE_URL` = your production URL (e.g. `https://your-project.vercel.app`)

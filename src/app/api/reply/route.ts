@@ -17,6 +17,8 @@ export async function POST(req: Request) {
       isFirstBreach?: boolean;
       mentionedObjectIds?: string[];
       localTimeContext?: string;
+      imageBase64?: string;
+      mimeType?: string;
       locale?: Locale;
       tone?: Tone;
       model?: string;
@@ -45,6 +47,8 @@ export async function POST(req: Request) {
         ? body.mentionedObjectIds
         : undefined,
       localTimeContext: body.localTimeContext,
+      imageBase64: body.imageBase64,
+      mimeType: body.mimeType,
       model: body.model,
       apiKey: body.apiKey,
     });

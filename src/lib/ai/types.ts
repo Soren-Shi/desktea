@@ -116,6 +116,7 @@ export interface ReplyResult {
   tensionDelta: number;
   actions?: GroupAction[];
   objectUpdates?: ObjectStateUpdate[];
+  newObjects?: DeskObject[];
   provider: ProviderName;
   model: string;
   durationMs: number;

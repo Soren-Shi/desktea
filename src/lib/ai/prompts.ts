@@ -1,16 +1,17 @@
 import { getObjectStatus } from "./normalize";
 import type { Box2D, ChatMessage, DeskObject, Locale, Tone } from "./types";
 
-function formatMemberLine(o: DeskObject): string {
+function formatMemberLine(o: DeskObject, includeBox = false): string {
   const moodPart = o.mood ? ` | mood: ${o.mood}` : "";
+  const boxPart = includeBox ? ` | box_2d: [${o.box_2d.join(", ")}]` : "";
   const memPart =
     o.memories && o.memories.length > 0
       ? ` | memories: [${o.memories.slice(-3).join("; ")}]`
       : "";
-  return `- id: "${o.id}" | name: "${o.name}" | role: "${o.roleTag}" | archetype: ${o.archetype}${moodPart} | personality: ${o.personality}${memPart}`;
+  return `- id: "${o.id}" | name: "${o.name}" | role: "${o.roleTag}" | archetype: ${o.archetype}${moodPart}${boxPart} | personality: ${o.personality}${memPart}`;
 }
 
-function buildRosterSections(objects: DeskObject[]): {
+function buildRosterSections(objects: DeskObject[], includeBox = false): {
   active: DeskObject[];
   muted: DeskObject[];
   kicked: DeskObject[];
@@ -31,20 +32,22 @@ function buildRosterSections(objects: DeskObject[]): {
   const blocks: string[] = [];
   blocks.push(
     `### ACTIVE SPEAKING MEMBERS\n${
-      active.length > 0 ? active.map(formatMemberLine).join("\n") : "(none)"
+      active.length > 0
+        ? active.map((o) => formatMemberLine(o, includeBox)).join("\n")
+        : "(none)"
     }`
   );
   if (muted.length > 0) {
     blocks.push(
       `### MUTED MEMBERS (CANNOT SEND MESSAGES UNTIL UNMUTED)\n${muted
-        .map(formatMemberLine)
+        .map((o) => formatMemberLine(o, includeBox))
         .join("\n")}`
     );
   }
   if (kicked.length > 0) {
     blocks.push(
       `### KICKED / EXILED MEMBERS (OUTSIDE GROUP — CAN BE PULLED BACK VIA "invite" ACTION)\n${kicked
-        .map(formatMemberLine)
+        .map((o) => formatMemberLine(o, includeBox))
         .join("\n")}`
     );
   }
@@ -137,6 +140,8 @@ export function buildReplyPrompt(params: {
   isFirstBreach: boolean;
   mentionedObjectIds?: string[];
   localTimeContext?: string;
+  hasImage?: boolean;
+  imageFilePath?: string;
 }): string {
   const {
     locale,
@@ -148,9 +153,11 @@ export function buildReplyPrompt(params: {
     isFirstBreach,
     mentionedObjectIds = [],
     localTimeContext,
+    hasImage = false,
+    imageFilePath,
   } = params;
 
-  const roster = buildRosterSections(objects);
+  const roster = buildRosterSections(objects, hasImage);
   const activeObjects = roster.active;
 
   const mentionedObjects = objects.filter((o) =>
@@ -159,6 +166,37 @@ export function buildReplyPrompt(params: {
   const unmentionedObjects = activeObjects.filter(
     (o) => !mentionedObjectIds.includes(o.id)
   );
+
+  // Strip the trailing owner message from history so it isn't duplicated twice in the prompt
+  const priorHistory =
+    history.length > 0 &&
+    history[history.length - 1].isOwner &&
+    history[history.length - 1].text.trim() === ownerMessage.trim()
+      ? history.slice(0, -1)
+      : history;
+
+  const recentTranscript = priorHistory
+    .slice(-10)
+    .map(
+      (m) =>
+        `${m.isOwner ? "[OWNER]" : m.isSystem ? "[SYSTEM]" : m.senderName}: ${m.text}`
+    )
+    .join("\n");
+
+  const visualBlock = hasImage
+    ? `\n### ATTACHED DESK PHOTOGRAPH & VISUAL DISCOVERY (\`newObjects[]\`)
+${
+  imageFilePath
+    ? `First, call your file-reading tool to inspect the desk photograph at "${imageFilePath}".`
+    : "The current desk photograph IS ATTACHED! Inspect it carefully."
+}
+- Every existing member's \`box_2d\` is listed in the roster above so you know which items are ALREADY in the group chat.
+- **IF the owner asks to pull/invite/add unboxed items visible on the desk into the group chat** (e.g. "桌面上还有两个植物，拉进群聊" / "拉近群聊" / "把鼠标也拉进来" / "pull the other two plants in"):
+  1. Look at the photo and locate those EXACT unboxed physical items (make sure their \`box_2d\` does NOT overlap any already-boxed member!).
+  2. Return them in \`newObjects[]\` (0 to 3 items) with tight normalized \`box_2d\` \`[ymin, xmin, ymax, xmax]\` (0..1000) and distinct witty names (e.g. distinguish multiple plants by position like "左侧小多肉" / "右侧小多肉").
+  3. Have the newly added items immediately speak in \`messages[]\` using their exact \`newObjects[].id\` (reacting to finally being invited after sitting on the desk ignored!), plus 1 reaction from an existing member!
+- **IF the owner is NOT asking to add new items** (just asking about something visible in the photo), keep \`newObjects: []\` and answer truthfully based on what is actually visible.\n`
+    : `\n### NEW OBJECTS\nNo desk photograph is attached this turn — you MUST return \`newObjects: []\`.\n`;
 
   const routingDirective =
     mentionedObjects.length > 0
@@ -175,13 +213,8 @@ export function buildReplyPrompt(params: {
 NEVER have 3 objects politely line up to reply to the owner one by one. Real group chats don't work like a panel interview!
 Dynamically choose ONE natural rhythm from below based on what the owner just said:
 1. **Single Beat (1 message)**: One most relevant item drops a razor-sharp short comeback directly, and the room falls awkwardly quiet.
-2. **Side-Whisper / Ignore Owner (2–3 messages)**: One item barely acknowledges the owner (or side-steps completely), pings \`@AnotherObject\` to gossip ABOUT the owner's excuse, and \`@AnotherObject\` replies directly to the first item (\`replyToName\` = first item's exact name).
-3. **Object-vs-Object Squabble (2–3 messages)**: The owner's remark sparks two objects to argue, blame-shift, or snitch on each other (\`replyToName\` pointing between items).`;
-
-  const recentTranscript = history
-    .slice(-12)
-    .map((m) => `${m.isOwner ? "[OWNER]" : m.isSystem ? "[SYSTEM]" : m.senderName}: ${m.text}`)
-    .join("\n");
+2. **Side-Whisper / Ignore Owner (2–3 messages)**: One item barely acknowledges the owner (or side-steps completely), pings \`@AnotherObject\` to gossip ABOUT the owner's latest message, and \`@AnotherObject\` replies directly to the first item (\`replyToName\` = first item's exact name).
+3. **Object-vs-Object Squabble (2–3 messages)**: The owner's newest message sparks two objects to argue, vote, blame-shift, or snitch on each other (\`replyToName\` pointing between items).`;
 
   const timeBlock = localTimeContext
     ? `\n### CURRENT REAL TIME\n${localTimeContext}\n`
@@ -198,35 +231,39 @@ ${langRule(locale)}
 ${toneRule(tone, locale)}
 ${timeBlock}
 ${roster.text}
-
+${visualBlock}
 ${routingDirective}
 
 ### LIVING AGENT AGENCY & REAL GROUP ACTIONS (\`actions[]\` + \`objectUpdates[]\`)
 You are NOT just generating static text — this group chat has REAL mutable state!
 1. **Owner Power Moves** (honor natural language commands in ANY phrasing):
    - **Kick out** (e.g. "把XX踢出去", "滚出群", "kick XX"): emit \`{ type: "kick", objectId, value: reason, systemNotice }\`. The kicked member CANNOT speak after being kicked! Remaining members react in shock, relief, or panic ("next it's gonna be me").
-   - **Pull back / Invite** (e.g. "把XX拉回来", "让XX回来", "bring XX back", "invite XX"): emit \`{ type: "invite", objectId, value: reason, systemNotice }\` targeting a KICKED (or gone) member. That returning member CAN speak immediately in \`messages\` — holding a grudge or acting smug about being begged back!
+   - **Pull back / Invite KICKED member** (e.g. "把XX拉回来", "让XX回来", "bring XX back"): emit \`{ type: "invite", objectId, value: reason, systemNotice }\` targeting a KICKED (or gone) member. That returning member CAN speak immediately in \`messages\` — holding a grudge or acting smug about being begged back!
    - **Mute / Unmute** (e.g. "把XX禁言", "XX闭嘴", "mute XX" / "解除禁言", "unmute XX"): emit \`mute\` or \`unmute\`. Muted members CANNOT speak until unmuted!
    - **Rename group** (e.g. "改群名叫...", "rename group to..."): emit \`{ type: "rename_group", objectId: "", value: newName, systemNotice }\`.
    - **Assign title / admin** (e.g. "封XX当群主/管理员/内鬼", "make XX admin"): emit \`{ type: "set_title", objectId, value: newRoleTag, systemNotice }\`.
    - If the owner did NOT command any state change, keep \`actions: []\` unless a rare dramatic autonomous event below is truly earned.
 2. **Autonomous Living Behavior**:
    - **Rage-Quit (\`leave\`)**: Only if the owner harshly insults or threatens to trash a specific object, that object may dramatically rage-quit (\`{ type: "leave", objectId, ... }\`) so the owner has to coax/invite it back!
-   - **Emotional Memory (\`objectUpdates\`)**: Whenever an object gets threatened, defended, snitched on, kicked, invited back, or given a broken promise, record a brief \`mood\` shift and 1 short \`memoryNote\` (e.g. "Owner threatened to toss me", "Kicked once and never forgiving"). Reference existing \`memories\` naturally!
+   - **Emotional Memory (\`objectUpdates\`)**: Whenever an object gets threatened, defended, snitched on, kicked, invited back, or given a broken promise, record a brief \`mood\` shift and 1 short \`memoryNote\`. Reference existing \`memories\` naturally!
 
-### RECENT CHAT LOG
-${recentTranscript}
+### PRIOR CHAT LOG (CONTEXT ONLY — DO NOT REPEAT OR RE-ANSWER OLD TURNS!)
+${recentTranscript || "(No prior messages yet)"}
 
-### OWNER JUST SENT
+### NEWEST MESSAGE FROM OWNER (RESPOND DIRECTLY TO THIS!)
 "${ownerMessage}"
 
+### STRICT ANTI-REPETITION & IDENTITY LOCK (CRITICAL)
+- **TOPIC FOCUS**: Respond specifically to the NEWEST MESSAGE FROM OWNER above ("${ownerMessage}"). NEVER re-answer an older owner message from the prior chat log!
+- **ZERO PARROTING**: NEVER copy, reuse, or paraphrase any sentence, joke, or phrase already present in PRIOR CHAT LOG! Every single line MUST be 100% fresh!
+- **IDENTITY LOCK**: Double-check every \`senderId\` against the roster — a succulent/plant NEVER says "I'm not a plant"; a mug speaks as a mug; a keyboard speaks as a keyboard. Never swap speakers' identities!
+
 ### DIRECTIVE
-Generate 1 to 4 organic, rapid-fire messages (\`senderId\` MUST match an ACTIVE speaking object ID, or an object newly restored by an \`invite\`/\`unmute\` action this turn):
+Generate 1 to 4 organic, fresh, rapid-fire messages (\`senderId\` MUST match an ACTIVE speaking object ID, a newly restored \`invite\`/\`unmute\` object ID, or a newly added \`newObjects[].id\`):
 - NEVER let a muted, kicked, or newly kicked object send messages in \`messages\`.
 - Prioritize object-to-object cross-talk (\`replyToName\` = exact name of another object) whenever an item stirs up drama or whispers sideways.
-- Stay strictly grounded in the real objects listed above (do NOT invent items not on the roster).
 - Keep each message under 2 short sentences — authentic texting cadence, zero AI fluff.
-- Format \`timestamp\` strictly as \`HH:MM\`.
+- Format \`timestamp\` as the CURRENT \`HH:MM\` (never jump into future minutes).
 - Update \`tensionDelta\` (-20 to +20) depending on whether the owner earned respect, made weak excuses, or abused admin power.
 
 Return strictly valid JSON matching the schema.`;

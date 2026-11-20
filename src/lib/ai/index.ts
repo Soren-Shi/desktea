@@ -6,7 +6,9 @@ import {
   runOpenRouterStructured,
 } from "./openrouter-provider";
 import {
+  dedupeParrotedMessages,
   filterMessagesAfterActions,
+  filterNewObjectsAgainstExisting,
   normalizeGroupActions,
   normalizeMessages,
   normalizeObjects,
@@ -69,6 +71,7 @@ interface RawReplyPayload {
   tensionDelta: number;
   actions?: RawGroupAction[];
   objectUpdates?: RawObjectUpdate[];
+  newObjects?: RawObject[];
   messages: RawMessage[];
 }
 
@@ -334,6 +337,8 @@ export async function replyToOwner(params: {
   isFirstBreach: boolean;
   mentionedObjectIds?: string[];
   localTimeContext?: string;
+  imageBase64?: string;
+  mimeType?: string;
   model?: string;
   apiKey?: string;
 }): Promise<ReplyResult> {
@@ -343,6 +348,9 @@ export async function replyToOwner(params: {
     params.ownerMessage,
     params.mentionedObjectIds
   );
+  const hasImage = Boolean(params.imageBase64);
+  const nextStartIdx =
+    params.objects.reduce((m, o) => Math.max(m, o.index), 0) + 1;
 
   const prompt = buildReplyPrompt({
     locale: params.locale,
@@ -354,8 +362,13 @@ export async function replyToOwner(params: {
     isFirstBreach: params.isFirstBreach,
     mentionedObjectIds: mentionedIds,
     localTimeContext: params.localTimeContext,
+    hasImage,
   });
   const schema = REPLY_SCHEMA as unknown as Record<string, unknown>;
+  const inlineImages =
+    hasImage && params.imageBase64
+      ? [{ base64: params.imageBase64, mimeType: params.mimeType || "image/jpeg" }]
+      : undefined;
 
   let res: { data: RawReplyPayload; model: string; durationMs: number };
 
@@ -364,15 +377,47 @@ export async function replyToOwner(params: {
       apiKey: resolvedKey,
       prompt,
       schema,
-      model: pickOpenRouterModel(params.model, DEFAULT_OPENROUTER_CHAT_MODEL),
-      temperature: 0.9,
+      images: inlineImages,
+      model: pickOpenRouterModel(
+        params.model,
+        hasImage ? DEFAULT_OPENROUTER_VISION_MODEL : DEFAULT_OPENROUTER_CHAT_MODEL
+      ),
+      temperature: hasImage ? 0.8 : 0.9,
     });
   } else if (provider === "gemini" && resolvedKey) {
     res = await runGeminiStructured<RawReplyPayload>({
       apiKey: resolvedKey,
       prompt,
       schema,
+      images: inlineImages,
       model: pickGeminiModel(params.model),
+    });
+  } else if (hasImage && params.imageBase64) {
+    res = await runAgyStructured<RawReplyPayload>({
+      prompt: "",
+      buildPromptWithPaths: ([filePath]) =>
+        buildReplyPrompt({
+          locale: params.locale,
+          tone: params.tone || "roast",
+          groupName: params.groupName,
+          objects: params.objects,
+          history: params.history,
+          ownerMessage: params.ownerMessage,
+          isFirstBreach: params.isFirstBreach,
+          mentionedObjectIds: mentionedIds,
+          localTimeContext: params.localTimeContext,
+          hasImage: true,
+          imageFilePath: filePath,
+        }),
+      schema,
+      images: [
+        {
+          filename: "desk-reply",
+          base64: params.imageBase64,
+          mimeType: params.mimeType || "image/jpeg",
+        },
+      ],
+      model: params.model,
     });
   } else {
     res = await runAgyStructured<RawReplyPayload>({
@@ -382,15 +427,42 @@ export async function replyToOwner(params: {
     });
   }
 
-  const actions = normalizeGroupActions(res.data.actions, params.objects, params.locale);
-  const objectUpdates = normalizeObjectUpdates(res.data.objectUpdates, params.objects);
-  const rawMsgs = normalizeMessages(res.data.messages, params.objects, "reply");
-  const messages = filterMessagesAfterActions(rawMsgs, params.objects, actions);
+  // Reconcile newly discovered objects from photo (map raw id -> canonical unique id)
+  const rawNewList = hasImage && Array.isArray(res.data.newObjects) ? res.data.newObjects : [];
+  const newObjects = filterNewObjectsAgainstExisting(
+    rawNewList,
+    params.objects,
+    nextStartIdx
+  );
+  const rawToCanonId = new Map<string, string>();
+  rawNewList.forEach((raw, idx) => {
+    const matched = newObjects.find(
+      (n) =>
+        n.name === raw.name ||
+        (idx < newObjects.length && n.box_2d[0] === Math.round(raw.box_2d?.[0] ?? -1))
+    );
+    if (raw.id && matched) {
+      rawToCanonId.set(raw.id, matched.id);
+    }
+  });
+
+  const remappedRawMsgs = (res.data.messages || []).map((m) => ({
+    ...m,
+    senderId: rawToCanonId.get(m.senderId) || m.senderId,
+  }));
+
+  const allObjects = [...params.objects, ...newObjects];
+  const actions = normalizeGroupActions(res.data.actions, allObjects, params.locale);
+  const objectUpdates = normalizeObjectUpdates(res.data.objectUpdates, allObjects);
+  const rawMsgs = normalizeMessages(remappedRawMsgs, allObjects, "reply");
+  const filteredMsgs = filterMessagesAfterActions(rawMsgs, allObjects, actions);
+  const messages = dedupeParrotedMessages(filteredMsgs, params.history);
 
   return {
     tensionDelta: Math.max(-20, Math.min(20, Math.round(res.data.tensionDelta))),
     actions,
     objectUpdates,
+    newObjects,
     messages,
     provider,
     model: res.model,
@@ -747,7 +819,8 @@ export async function generateDeskChatter(params: {
   const actions = normalizeGroupActions(res.data.actions, params.objects, params.locale);
   const objectUpdates = normalizeObjectUpdates(res.data.objectUpdates, params.objects);
   const rawMsgs = normalizeMessages(res.data.messages, params.objects, "chat");
-  const messages = filterMessagesAfterActions(rawMsgs, params.objects, actions);
+  const filteredMsgs = filterMessagesAfterActions(rawMsgs, params.objects, actions);
+  const messages = dedupeParrotedMessages(filteredMsgs, params.history);
 
   return {
     tensionDelta: Math.max(-8, Math.min(8, Math.round(res.data.tensionDelta))),
