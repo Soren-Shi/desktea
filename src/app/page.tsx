@@ -1982,6 +1982,7 @@ export default function HomePage() {
       <OnboardingTour
         isOpen={isTourOpen}
         locale={locale}
+        onToggleLocale={handleToggleLocale}
         onClose={handleFinishTour}
         onComplete={handleFinishTour}
       />

@@ -19,6 +19,7 @@ import { getCopy } from "@/lib/i18n";
 interface OnboardingTourProps {
   isOpen: boolean;
   locale: Locale;
+  onToggleLocale: () => void;
   onClose: () => void;
   onComplete: () => void;
 }
@@ -26,6 +27,7 @@ interface OnboardingTourProps {
 export function OnboardingTour({
   isOpen,
   locale,
+  onToggleLocale,
   onClose,
   onComplete,
 }: OnboardingTourProps) {
@@ -75,17 +77,25 @@ export function OnboardingTour({
       aria-label={t.tourHelpTitle}
     >
       <div className="modal-enter max-h-[90dvh] w-full max-w-[440px] overflow-y-auto rounded-3xl border border-[var(--border-strong)] bg-[#111113] p-5 text-[#FAFAFA] shadow-2xl sm:p-6">
-        {/* Top Bar: Step Counter + Skip / Close */}
-        <div className="flex items-center justify-between gap-3">
-          <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0.5 text-[11px] font-medium text-[#D9DBDF]">
+        {/* Top Bar: Step Counter + Locale Switch + Skip / Close */}
+        <div className="flex items-center justify-between gap-2">
+          <span className="min-w-0 truncate rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0.5 text-[11px] font-medium text-[#D9DBDF]">
             {current.badge}
           </span>
 
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={onToggleLocale}
+              title={locale === "en" ? "切换为中文" : "Switch to English"}
+              className="cursor-pointer rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-2.5 py-0.5 text-[11.5px] font-medium text-[#D9DBDF] transition-colors hover:bg-[var(--surface-hover)] hover:text-white active:scale-[0.97]"
+            >
+              {locale === "en" ? "中文" : "EN"}
+            </button>
             <button
               type="button"
               onClick={onClose}
-              className="cursor-pointer rounded-full px-2.5 py-1 text-[12px] font-medium text-[var(--ink-secondary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-white"
+              className="cursor-pointer rounded-full px-2 py-1 text-[12px] font-medium text-[var(--ink-secondary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-white"
             >
               {t.tourSkip}
             </button>
