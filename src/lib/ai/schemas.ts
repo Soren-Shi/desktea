@@ -60,6 +60,67 @@ export const ANALYZE_SCHEMA = {
   required: ["groupName", "resentmentScore", "verdict", "mostLikelyToLeave", "objects", "messages"],
 } as const;
 
+const GROUP_ACTIONS_SCHEMA = {
+  type: "array",
+  description:
+    "0 to 2 real group-chat state changes triggered by the owner's command (kick/invite/mute/unmute/rename_group/set_title) OR rare dramatic object agency (leave/rename_group). Empty array if no state change.",
+  items: {
+    type: "object",
+    properties: {
+      type: {
+        type: "string",
+        enum: [
+          "kick",
+          "invite",
+          "mute",
+          "unmute",
+          "rename_group",
+          "set_title",
+          "leave",
+        ],
+      },
+      objectId: {
+        type: "string",
+        description:
+          "Exact object id for member actions, or empty string for rename_group.",
+      },
+      value: {
+        type: "string",
+        description:
+          "New group name (rename_group), new roleTag (set_title), or short reason/empty string.",
+      },
+      systemNotice: {
+        type: "string",
+        description:
+          "Concise in-language group system alert, e.g. '[冰美式] 被主人移出了群聊' or 'Owner invited [Coffee Mug] back to the chat'.",
+      },
+    },
+    required: ["type", "objectId", "value", "systemNotice"],
+  },
+} as const;
+
+const OBJECT_UPDATES_SCHEMA = {
+  type: "array",
+  description:
+    "0 to 3 emotional/memory updates for objects whose mood shifted or who formed a lasting grudge/memory this turn.",
+  items: {
+    type: "object",
+    properties: {
+      objectId: { type: "string" },
+      mood: {
+        type: "string",
+        enum: ["chill", "annoyed", "panicked", "smug", "betrayed", "dramatic"],
+      },
+      memoryNote: {
+        type: "string",
+        description:
+          "Short 3-10 word grudge/event to remember in future turns, or empty string.",
+      },
+    },
+    required: ["objectId", "mood", "memoryNote"],
+  },
+} as const;
+
 export const REPLY_SCHEMA = {
   type: "object",
   properties: {
@@ -67,6 +128,8 @@ export const REPLY_SCHEMA = {
       type: "integer",
       description: "Change in resentment score from -20 to +20 based on how convincing or shameless the owner's reply is.",
     },
+    actions: GROUP_ACTIONS_SCHEMA,
+    objectUpdates: OBJECT_UPDATES_SCHEMA,
     messages: {
       type: "array",
       description:
@@ -74,8 +137,8 @@ export const REPLY_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          senderId: { type: "string", description: "Must match one of the existing objects[].id values." },
-          text: { type: "string", description: "Sharp, funny immediate reaction to the owner busting into the group chat." },
+          senderId: { type: "string", description: "Must match one of the active speaking objects[].id values." },
+          text: { type: "string", description: "Sharp, funny immediate reaction inside the group chat." },
           replyToName: { type: "string", description: "Target name or empty string." },
           reaction: { type: "string", description: "Single emoji reaction or empty string." },
           timestamp: { type: "string", description: "Timestamp slightly after the last message." },
@@ -84,7 +147,7 @@ export const REPLY_SCHEMA = {
       },
     },
   },
-  required: ["tensionDelta", "messages"],
+  required: ["tensionDelta", "actions", "objectUpdates", "messages"],
 } as const;
 
 export const DIFF_SCHEMA = {
@@ -98,14 +161,43 @@ export const DIFF_SCHEMA = {
       type: "integer",
       description: "Updated resentment index from 0 to 100.",
     },
+    objectAudits: {
+      type: "array",
+      description:
+        "EXACTLY one visual audit per previous active object checking whether that exact physical item still exists in Image 2 (AFTER) and where it is located.",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Exact previous object id." },
+          status: {
+            type: "string",
+            enum: ["kept", "moved", "removed"],
+            description:
+              "kept = still present in roughly the same relative spot; moved = same exact item relocated on desk; removed = physically gone/missing from Image 2.",
+          },
+          evidence: {
+            type: "string",
+            description:
+              "Concise visual proof in Image 2 confirming presence or absence (never guess).",
+          },
+          afterBox2d: {
+            type: "array",
+            description:
+              "Tight [ymin, xmin, ymax, xmax] (0..1000) of this exact item in Image 2. MUST be [0, 0, 0, 0] if status is 'removed'.",
+            items: { type: "integer" },
+          },
+        },
+        required: ["id", "status", "evidence", "afterBox2d"],
+      },
+    },
     removedIds: {
       type: "array",
-      description: "IDs from the previous objects list that disappeared or were thrown away in the After photo.",
+      description: "IDs from the previous objects list that disappeared or were removed in the After photo (must match objectAudits with status='removed').",
       items: { type: "string" },
     },
     newObjects: {
       type: "array",
-      description: "0 to 3 newly appeared distinct objects in the After photo with box_2d normalized 0..1000.",
+      description: "0 to 3 genuinely NEW distinct objects visibly present in the After photo that were NOT in the Before photo, with box_2d normalized 0..1000.",
       items: {
         type: "object",
         properties: {
@@ -127,7 +219,7 @@ export const DIFF_SCHEMA = {
     },
     messages: {
       type: "array",
-      description: "4 to 6 dramatic messages reacting to who got removed, added, or moved.",
+      description: "4 to 6 dramatic messages reacting strictly to who got removed, added, or moved.",
       items: {
         type: "object",
         properties: {
@@ -142,7 +234,7 @@ export const DIFF_SCHEMA = {
       },
     },
   },
-  required: ["summary", "resentmentScore", "removedIds", "newObjects", "messages"],
+  required: ["summary", "resentmentScore", "objectAudits", "removedIds", "newObjects", "messages"],
 } as const;
 
 export const ADD_OBJECT_SCHEMA = {
@@ -255,6 +347,8 @@ export const CHATTER_SCHEMA = {
       type: "integer",
       description: "Subtle resentment shift from -8 to +8.",
     },
+    actions: GROUP_ACTIONS_SCHEMA,
+    objectUpdates: OBJECT_UPDATES_SCHEMA,
     messages: {
       type: "array",
       description: "1 to 3 organic autonomous messages strictly between desk objects.",
@@ -263,7 +357,7 @@ export const CHATTER_SCHEMA = {
         properties: {
           senderId: {
             type: "string",
-            description: "Must match one of the active objects[].id values.",
+            description: "Must match one of the active speaking objects[].id values.",
           },
           text: {
             type: "string",
@@ -287,5 +381,5 @@ export const CHATTER_SCHEMA = {
       },
     },
   },
-  required: ["tensionDelta", "messages"],
+  required: ["tensionDelta", "actions", "objectUpdates", "messages"],
 } as const;

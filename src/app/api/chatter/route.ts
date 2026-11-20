@@ -12,6 +12,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       objects?: DeskObject[];
       history?: ChatMessage[];
+      groupName?: string;
       ownerPresent?: boolean;
       localTimeContext?: string;
       locale?: Locale;
@@ -30,6 +31,7 @@ export async function POST(req: Request) {
     const result = await generateDeskChatter({
       locale: body.locale === "en" ? "en" : "zh",
       tone,
+      groupName: body.groupName,
       objects: body.objects,
       history: Array.isArray(body.history) ? body.history : [],
       ownerPresent: Boolean(body.ownerPresent),

@@ -60,7 +60,7 @@ export function toStrictJsonSchema(
     out.additionalProperties = false;
   }
 
-  if (keyName === "box_2d" && out.type === "array") {
+  if ((keyName === "box_2d" || keyName === "afterBox2d") && out.type === "array") {
     out.minItems = 4;
     out.maxItems = 4;
   }
@@ -284,7 +284,7 @@ export async function runOpenRouterStructured<T>(params: {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${params.apiKey}`,
     "Content-Type": "application/json",
-    "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "https://desktea.vercel.app",
+    "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "https://desktea.xyz",
     "X-Title": "DeskTea",
   };
 

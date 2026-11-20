@@ -1,4 +1,62 @@
+import { getObjectStatus } from "./normalize";
 import type { Box2D, ChatMessage, DeskObject, Locale, Tone } from "./types";
+
+function formatMemberLine(o: DeskObject): string {
+  const moodPart = o.mood ? ` | mood: ${o.mood}` : "";
+  const memPart =
+    o.memories && o.memories.length > 0
+      ? ` | memories: [${o.memories.slice(-3).join("; ")}]`
+      : "";
+  return `- id: "${o.id}" | name: "${o.name}" | role: "${o.roleTag}" | archetype: ${o.archetype}${moodPart} | personality: ${o.personality}${memPart}`;
+}
+
+function buildRosterSections(objects: DeskObject[]): {
+  active: DeskObject[];
+  muted: DeskObject[];
+  kicked: DeskObject[];
+  gone: DeskObject[];
+  text: string;
+} {
+  const active: DeskObject[] = [];
+  const muted: DeskObject[] = [];
+  const kicked: DeskObject[] = [];
+  const gone: DeskObject[] = [];
+  for (const o of objects) {
+    const st = getObjectStatus(o);
+    if (st === "active") active.push(o);
+    else if (st === "muted") muted.push(o);
+    else if (st === "kicked") kicked.push(o);
+    else gone.push(o);
+  }
+  const blocks: string[] = [];
+  blocks.push(
+    `### ACTIVE SPEAKING MEMBERS\n${
+      active.length > 0 ? active.map(formatMemberLine).join("\n") : "(none)"
+    }`
+  );
+  if (muted.length > 0) {
+    blocks.push(
+      `### MUTED MEMBERS (CANNOT SEND MESSAGES UNTIL UNMUTED)\n${muted
+        .map(formatMemberLine)
+        .join("\n")}`
+    );
+  }
+  if (kicked.length > 0) {
+    blocks.push(
+      `### KICKED / EXILED MEMBERS (OUTSIDE GROUP — CAN BE PULLED BACK VIA "invite" ACTION)\n${kicked
+        .map(formatMemberLine)
+        .join("\n")}`
+    );
+  }
+  if (gone.length > 0) {
+    blocks.push(
+      `### PHYSICALLY GONE FROM DESK (REMOVED IN SEQUEL)\n${gone
+        .map((o) => `- id: "${o.id}" | name: "${o.name}"`)
+        .join("\n")}`
+    );
+  }
+  return { active, muted, kicked, gone, text: blocks.join("\n\n") };
+}
 
 function langRule(locale: Locale): string {
   return locale === "zh"
@@ -72,6 +130,7 @@ Return strictly valid JSON matching the schema.`;
 export function buildReplyPrompt(params: {
   locale: Locale;
   tone?: Tone;
+  groupName?: string;
   objects: DeskObject[];
   history: ChatMessage[];
   ownerMessage: string;
@@ -82,6 +141,7 @@ export function buildReplyPrompt(params: {
   const {
     locale,
     tone = "roast",
+    groupName,
     objects,
     history,
     ownerMessage,
@@ -90,15 +150,10 @@ export function buildReplyPrompt(params: {
     localTimeContext,
   } = params;
 
-  const activeObjects = objects.filter((o) => !o.removed);
-  const roster = activeObjects
-    .map(
-      (o) =>
-        `- id: "${o.id}" | name: "${o.name}" | archetype: ${o.archetype} | personality: ${o.personality}`
-    )
-    .join("\n");
+  const roster = buildRosterSections(objects);
+  const activeObjects = roster.active;
 
-  const mentionedObjects = activeObjects.filter((o) =>
+  const mentionedObjects = objects.filter((o) =>
     mentionedObjectIds.includes(o.id)
   );
   const unmentionedObjects = activeObjects.filter(
@@ -109,12 +164,13 @@ export function buildReplyPrompt(params: {
     mentionedObjects.length > 0
       ? `### TRIGGER ROUTING (EXPLICIT @MENTIONS DETECTED)
 - PRIMARY TARGETS (@mentioned by the owner): ${mentionedObjects
-          .map((o) => `"${o.name}" (id: "${o.id}")`)
+          .map((o) => `"${o.name}" (id: "${o.id}", status: ${getObjectStatus(o)})`)
           .join(", ")}.
-- Have "${mentionedObjects[0].id}" react first (defending itself, panicking, or throwing another object under the bus!).
+- If a mentioned target is active and NOT being kicked/muted right now, have it react first (defending itself, panicking, or throwing another object under the bus!).
+- If a mentioned target is kicked/exiled and the owner invites it back, emit an \`invite\` action and let it burst back in with attitude!
 - Then choose organically: either stop right after the target replies, OR have 1–2 bystanders (${unmentionedObjects
           .map((o) => `"${o.name}" (id: "${o.id}")`)
-          .join(", ") || "none"}) reply TO THE MENTIONED OBJECT (side-gossip, snitching, or arguing with each other — not everyone needs to address the owner).`
+          .join(", ") || "none"}) reply TO THE TARGET (side-gossip, snitching, or arguing with each other — not everyone needs to address the owner).`
       : `### ORGANIC GROUP-CHAT CHOREOGRAPHY (CRITICAL — AVOID ROBOTIC TURN-TAKING)
 NEVER have 3 objects politely line up to reply to the owner one by one. Real group chats don't work like a panel interview!
 Dynamically choose ONE natural rhythm from below based on what the owner just said:
@@ -123,27 +179,40 @@ Dynamically choose ONE natural rhythm from below based on what the owner just sa
 3. **Object-vs-Object Squabble (2–3 messages)**: The owner's remark sparks two objects to argue, blame-shift, or snitch on each other (\`replyToName\` pointing between items).`;
 
   const recentTranscript = history
-    .slice(-10)
-    .map((m) => `${m.isOwner ? "[OWNER]" : m.senderName}: ${m.text}`)
+    .slice(-12)
+    .map((m) => `${m.isOwner ? "[OWNER]" : m.isSystem ? "[SYSTEM]" : m.senderName}: ${m.text}`)
     .join("\n");
 
   const timeBlock = localTimeContext
     ? `\n### CURRENT REAL TIME\n${localTimeContext}\n`
     : "";
 
-  return `You are continuing the secret desk group chat right after the human owner ${
+  return `You are directing a living secret group chat of desk objects right after the human owner ${
     isFirstBreach
       ? "just BROKE INTO the group chat and caught everyone talking trash"
       : "spoke inside the intercepted chat"
   }.
+${groupName ? `Current group name: "${groupName}"` : ""}
 
 ${langRule(locale)}
 ${toneRule(tone, locale)}
 ${timeBlock}
-### ACTIVE DESK OBJECTS
-${roster}
+${roster.text}
 
 ${routingDirective}
+
+### LIVING AGENT AGENCY & REAL GROUP ACTIONS (\`actions[]\` + \`objectUpdates[]\`)
+You are NOT just generating static text — this group chat has REAL mutable state!
+1. **Owner Power Moves** (honor natural language commands in ANY phrasing):
+   - **Kick out** (e.g. "把XX踢出去", "滚出群", "kick XX"): emit \`{ type: "kick", objectId, value: reason, systemNotice }\`. The kicked member CANNOT speak after being kicked! Remaining members react in shock, relief, or panic ("next it's gonna be me").
+   - **Pull back / Invite** (e.g. "把XX拉回来", "让XX回来", "bring XX back", "invite XX"): emit \`{ type: "invite", objectId, value: reason, systemNotice }\` targeting a KICKED (or gone) member. That returning member CAN speak immediately in \`messages\` — holding a grudge or acting smug about being begged back!
+   - **Mute / Unmute** (e.g. "把XX禁言", "XX闭嘴", "mute XX" / "解除禁言", "unmute XX"): emit \`mute\` or \`unmute\`. Muted members CANNOT speak until unmuted!
+   - **Rename group** (e.g. "改群名叫...", "rename group to..."): emit \`{ type: "rename_group", objectId: "", value: newName, systemNotice }\`.
+   - **Assign title / admin** (e.g. "封XX当群主/管理员/内鬼", "make XX admin"): emit \`{ type: "set_title", objectId, value: newRoleTag, systemNotice }\`.
+   - If the owner did NOT command any state change, keep \`actions: []\` unless a rare dramatic autonomous event below is truly earned.
+2. **Autonomous Living Behavior**:
+   - **Rage-Quit (\`leave\`)**: Only if the owner harshly insults or threatens to trash a specific object, that object may dramatically rage-quit (\`{ type: "leave", objectId, ... }\`) so the owner has to coax/invite it back!
+   - **Emotional Memory (\`objectUpdates\`)**: Whenever an object gets threatened, defended, snitched on, kicked, invited back, or given a broken promise, record a brief \`mood\` shift and 1 short \`memoryNote\` (e.g. "Owner threatened to toss me", "Kicked once and never forgiving"). Reference existing \`memories\` naturally!
 
 ### RECENT CHAT LOG
 ${recentTranscript}
@@ -152,12 +221,13 @@ ${recentTranscript}
 "${ownerMessage}"
 
 ### DIRECTIVE
-Generate 1 to 4 organic, rapid-fire messages (\`senderId\` MUST match one of the active object IDs):
-- Prioritize object-to-object cross-talk (\`replyToName\` = exact name of another object) whenever an item stirs up drama or whispers sideways instead of addressing the owner directly.
+Generate 1 to 4 organic, rapid-fire messages (\`senderId\` MUST match an ACTIVE speaking object ID, or an object newly restored by an \`invite\`/\`unmute\` action this turn):
+- NEVER let a muted, kicked, or newly kicked object send messages in \`messages\`.
+- Prioritize object-to-object cross-talk (\`replyToName\` = exact name of another object) whenever an item stirs up drama or whispers sideways.
 - Stay strictly grounded in the real objects listed above (do NOT invent items not on the roster).
 - Keep each message under 2 short sentences — authentic texting cadence, zero AI fluff.
 - Format \`timestamp\` strictly as \`HH:MM\`.
-- Update \`tensionDelta\` (-20 to +20) depending on whether the owner actually promised action or made weak excuses.
+- Update \`tensionDelta\` (-20 to +20) depending on whether the owner earned respect, made weak excuses, or abused admin power.
 
 Return strictly valid JSON matching the schema.`;
 }
@@ -165,6 +235,7 @@ Return strictly valid JSON matching the schema.`;
 export function buildChatterPrompt(params: {
   locale: Locale;
   tone?: Tone;
+  groupName?: string;
   objects: DeskObject[];
   history: ChatMessage[];
   ownerPresent: boolean;
@@ -173,19 +244,14 @@ export function buildChatterPrompt(params: {
   const {
     locale,
     tone = "roast",
+    groupName,
     objects,
     history,
     ownerPresent,
     localTimeContext,
   } = params;
 
-  const activeObjects = objects.filter((o) => !o.removed);
-  const roster = activeObjects
-    .map(
-      (o) =>
-        `- id: "${o.id}" | name: "${o.name}" | archetype: ${o.archetype} | personality: ${o.personality}`
-    )
-    .join("\n");
+  const roster = buildRosterSections(objects);
 
   const recentTranscript = history
     .slice(-12)
@@ -194,18 +260,21 @@ export function buildChatterPrompt(params: {
 
   const presenceDirective = ownerPresent
     ? `### PRESENCE: OWNER IS SILENTLY WATCHING / LURKING
-- The human owner is in the chat silently reading without typing. Objects should awkwardly whisper sideways to each other ("uh, are they still staring at this chat?", side-eyeing each other, shifting blame) OR talk around the owner.`
+- The human owner is in the chat silently reading without typing. Objects should awkwardly whisper sideways to each other ("uh, are they still staring at this chat?", side-eyeing each other, shifting blame) OR talk around the owner. Keep \`actions: []\`.`
     : `### PRESENCE: OWNER IS NOT LOOKING / STEPPED AWAY
-- The owner isn't paying attention right now (or just stepped away from the desk). Objects feel safe talking freely behind the owner's back, spilling fresh petty grievances with each other, or double-checking whether the owner really walked away.`;
+- The owner isn't paying attention right now (or just stepped away from the desk). Objects feel safe talking freely behind the owner's back, spilling fresh petty grievances, recalling past \`memories\`, or double-checking whether the owner really walked away.
+- **OCCASIONAL SECRET MISCHIEF (optional, ~25% of turns when owner is away)**:
+  - If there is a KICKED member outside the group, an active ally can secretly pull them back in (\`invite\`) behind the owner's back!
+  - OR an object can secretly rename the group (\`rename_group\`) to something petty about the owner!`;
 
-  return `You are continuing an intercepted group chat between desk objects having a spontaneous conversation WITH EACH OTHER (the owner did NOT send a message this turn).
+  return `You are continuing a living secret group chat between desk objects having a spontaneous conversation WITH EACH OTHER (the owner did NOT send a message this turn).
+${groupName ? `Current group name: "${groupName}"` : ""}
 
 ${langRule(locale)}
 ${toneRule(tone, locale)}
 
 ${localTimeContext ? `### CURRENT REAL TIME\n${localTimeContext}\n` : ""}
-### ACTIVE DESK OBJECTS
-${roster}
+${roster.text}
 
 ${presenceDirective}
 
@@ -213,10 +282,11 @@ ${presenceDirective}
 ${recentTranscript || "(No prior messages yet)"}
 
 ### DIRECTIVE
-Generate 1 to 3 organic back-and-forth messages STRICTLY between the active objects above:
-- Pick an unresolved thread from the recent chat, a small physical detail visible between two nearby items, or the current time of day (${localTimeContext || "right now"}).
+Generate 1 to 3 organic back-and-forth messages STRICTLY between the ACTIVE speaking objects above (plus any kicked member secretly invited back this turn):
+- Pick an unresolved thread from the recent chat, an object's existing \`memories\`, a kicked/muted comrade's fate, or the current time of day (${localTimeContext || "right now"}).
 - Make items address EACH OTHER (\`@ExactObjectName\` and \`replyToName\` = another object's exact name) rather than lecturing the owner.
 - STRICT ANTI-REPETITION: Do NOT repeat phrases, punchlines, or opening hooks already used in RECENT CHAT LOG. Keep each line crisp (1–2 short texting lines).
+- Update \`objectUpdates\` if an alliance forms or mood shifts.
 - Format \`timestamp\` strictly as \`HH:MM\`.
 - Set \`tensionDelta\` (-8 to +8).
 
@@ -235,12 +305,16 @@ export function buildDiffPrompt(params: {
   const imageInstruction =
     beforePath && afterPath
       ? `First, call your file-reading tool on BOTH images:
-- BEFORE photo: "${beforePath}"
-- AFTER photo: "${afterPath}"`
-      : `Inspect BOTH attached images in order: Image 1 is BEFORE, Image 2 is AFTER.`;
+- BEFORE photo (Image 1): "${beforePath}"
+- AFTER photo (Image 2): "${afterPath}"`
+      : `Inspect BOTH attached images carefully in order: Image 1 is BEFORE, Image 2 is AFTER.`;
 
-  const roster = objects
-    .map((o) => `- id: "${o.id}" | name: "${o.name}" | archetype: ${o.archetype}`)
+  const prevActive = objects.filter((o) => !o.removed && getObjectStatus(o) !== "gone");
+  const roster = prevActive
+    .map(
+      (o) =>
+        `- id: "${o.id}" | name: "${o.name}" | roleTag: "${o.roleTag}" | archetype: ${o.archetype} | before_box_2d: [${o.box_2d.join(", ")}]`
+    )
     .join("\n");
 
   const recentTranscript = history
@@ -250,25 +324,41 @@ export function buildDiffPrompt(params: {
 
   return `${imageInstruction}
 
-Compare the BEFORE desk photo against the AFTER desk photo. The owner just shot a sequel ("拍续集") after changing something on the desk (cleaned up, removed coffee/trash, added something new, or shoved things around).
+Compare Image 1 (BEFORE) against Image 2 (AFTER). The owner shot a follow-up sequel ("拍续集") after changing something on the desk (removing/throwing away an item, adding a new item, or moving things around).
 
 ${langRule(locale)}
 ${toneRule(tone, locale)}
 
-### PREVIOUS CHAT MEMBERS
+### PREVIOUS ACTIVE DESK MEMBERS (WITH THEIR EXACT BEFORE COORDINATES [ymin, xmin, ymax, xmax] 0..1000)
 ${roster}
 
 ### RECENT CONTEXT
 ${recentTranscript}
 
-### INSTRUCTIONS
-1. Identify which previous \`objects\` are visibly GONE from the After photo -> list their IDs in \`removedIds\`. Do NOT falsely mark items that are still clearly present.
-2. Identify 0 to 3 genuinely NEW distinct objects visibly present in the After photo -> add them to \`newObjects\` with tight \`box_2d\` coordinates [ymin, xmin, ymax, xmax] normalized 0..1000 relative to the AFTER photo.
-3. Write 4 to 6 dramatic messages matching the tone:
-   - Start with \`isSystem: true, senderId: "system"\` alerts for any removed items or new items joining.
-   - Then surviving/new objects react strictly to what actually changed in the photos.
-   - Format \`timestamp\` strictly as \`HH:MM\`.
-4. Set an updated \`resentmentScore\` (0..100) reflecting whether the desk got cleaner or worse.
+### STEP 1: STRICT PER-OBJECT VISUAL AUDIT (\`objectAudits[]\`) — ZERO HALLUCINATION!
+NOTE ON CAMERA DRIFT: Both photos were shot handheld from roughly the same spot, so expect small natural framing shifts (3–15% translation, slight zoom/tilt). Match items by **true physical identity** (shape, color, texture, markings), NOT blind coordinate overlap!
+
+Audit EVERY SINGLE previous object listed above in \`objectAudits\` (exact same \`id\`):
+1. Look at its \`before_box_2d\` in Image 1 so you know EXACTLY which physical item it is.
+2. Search Image 2 (AFTER) carefully for that EXACT same physical item:
+   - **If that EXACT physical item is GONE / MISSING from Image 2** (even if another object or empty table now occupies those coordinates):
+     - Set \`status: "removed"\`, \`afterBox2d: [0, 0, 0, 0]\`, and explain briefly in \`evidence\` (e.g. "empty desk surface where the coffee cup used to be").
+     - ALSO include its \`id\` in \`removedIds\`.
+     - **CRITICAL ANTI-BUG RULE**: NEVER force-assign a missing object's ID to a different nearby item, a background region, or a newly placed item! If you cannot clearly see the same physical object in Image 2, it MUST be \`status: "removed"\`!
+   - **If that EXACT physical item is STILL visibly present in Image 2**:
+     - Set \`status: "kept"\` (roughly same spot relative to desk) or \`status: "moved"\` (clearly repositioned on the desk).
+     - Return its **TIGHT, ACCURATE NEW \`afterBox2d\`** \`[ymin, xmin, ymax, xmax]\` in Image 2's coordinate space (compensating for any camera shift or item movement!).
+
+### STEP 2: GENUINELY NEW OBJECTS (\`newObjects[]\`)
+- Identify 0 to 3 genuinely NEW distinct physical items clearly visible in Image 2 that were NOT in Image 1.
+- NEVER duplicate any item already marked \`kept\` or \`moved\` in \`objectAudits\`!
+- Provide tight \`box_2d\` coordinates [ymin, xmin, ymax, xmax] normalized 0..1000 relative to Image 2.
+
+### STEP 3: SEQUEL GROUP CHAT (4 to 6 messages)
+- Start with \`isSystem: true, senderId: "system"\` alerts ONLY for items truly removed or truly newly added.
+- Surviving and new objects react strictly to what ACTUALLY changed in the photos (grieving/roasting who disappeared, hazing newcomers, commenting on who got shoved aside).
+- Format \`timestamp\` strictly as \`HH:MM\`.
+- Set an updated \`resentmentScore\` (0..100) reflecting whether the desk got cleaner or worse.
 
 Return strictly valid JSON matching the schema.`;
 }

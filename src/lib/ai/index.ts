@@ -6,11 +6,18 @@ import {
   runOpenRouterStructured,
 } from "./openrouter-provider";
 import {
+  filterMessagesAfterActions,
+  normalizeGroupActions,
   normalizeMessages,
   normalizeObjects,
+  normalizeObjectUpdates,
+  reconcileDiffAudits,
   resolveMentionedObjectIds,
+  type RawDiffAudit,
+  type RawGroupAction,
   type RawMessage,
   type RawObject,
+  type RawObjectUpdate,
 } from "./normalize";
 import {
   buildAddObjectPrompt,
@@ -60,17 +67,22 @@ interface RawAnalyzePayload {
 
 interface RawReplyPayload {
   tensionDelta: number;
+  actions?: RawGroupAction[];
+  objectUpdates?: RawObjectUpdate[];
   messages: RawMessage[];
 }
 
 interface RawChatterPayload {
   tensionDelta: number;
+  actions?: RawGroupAction[];
+  objectUpdates?: RawObjectUpdate[];
   messages: RawMessage[];
 }
 
 interface RawDiffPayload {
   summary: string;
   resentmentScore: number;
+  objectAudits?: RawDiffAudit[];
   removedIds: string[];
   newObjects: RawObject[];
   messages: RawMessage[];
@@ -315,6 +327,7 @@ export async function analyzeDesk(params: {
 export async function replyToOwner(params: {
   locale: Locale;
   tone?: Tone;
+  groupName?: string;
   objects: DeskObject[];
   history: ChatMessage[];
   ownerMessage: string;
@@ -334,6 +347,7 @@ export async function replyToOwner(params: {
   const prompt = buildReplyPrompt({
     locale: params.locale,
     tone: params.tone || "roast",
+    groupName: params.groupName,
     objects: params.objects,
     history: params.history,
     ownerMessage: params.ownerMessage,
@@ -368,9 +382,16 @@ export async function replyToOwner(params: {
     });
   }
 
+  const actions = normalizeGroupActions(res.data.actions, params.objects, params.locale);
+  const objectUpdates = normalizeObjectUpdates(res.data.objectUpdates, params.objects);
+  const rawMsgs = normalizeMessages(res.data.messages, params.objects, "reply");
+  const messages = filterMessagesAfterActions(rawMsgs, params.objects, actions);
+
   return {
     tensionDelta: Math.max(-20, Math.min(20, Math.round(res.data.tensionDelta))),
-    messages: normalizeMessages(res.data.messages, params.objects, "reply"),
+    actions,
+    objectUpdates,
+    messages,
     provider,
     model: res.model,
     durationMs: res.durationMs,
@@ -446,16 +467,21 @@ export async function diffDesks(params: {
     });
   }
 
-  const newObjects = normalizeObjects(res.data.newObjects, nextStartIdx).map((o) => ({
-    ...o,
-    isNew: true,
-  }));
-  const allObjects = [...params.objects, ...newObjects];
+  const reconciled = reconcileDiffAudits({
+    prevObjects: params.objects,
+    rawAudits: res.data.objectAudits,
+    rawRemovedIds: res.data.removedIds,
+    rawNewObjects: res.data.newObjects,
+    nextStartIdx,
+  });
+  const allObjects = [...params.objects, ...reconciled.newObjects];
 
   return {
     summary: res.data.summary,
-    removedIds: res.data.removedIds || [],
-    newObjects,
+    removedIds: reconciled.removedIds,
+    updatedBoxes: reconciled.updatedBoxes,
+    objectAudits: reconciled.objectAudits,
+    newObjects: reconciled.newObjects,
     messages: normalizeMessages(res.data.messages, allObjects, "diff"),
     resentmentScore: Math.max(0, Math.min(100, Math.round(res.data.resentmentScore))),
     provider,
@@ -673,6 +699,7 @@ export async function liveCameraTurn(params: {
 export async function generateDeskChatter(params: {
   locale: Locale;
   tone?: Tone;
+  groupName?: string;
   objects: DeskObject[];
   history: ChatMessage[];
   ownerPresent: boolean;
@@ -684,6 +711,7 @@ export async function generateDeskChatter(params: {
   const prompt = buildChatterPrompt({
     locale: params.locale,
     tone: params.tone || "roast",
+    groupName: params.groupName,
     objects: params.objects,
     history: params.history,
     ownerPresent: params.ownerPresent,
@@ -716,9 +744,16 @@ export async function generateDeskChatter(params: {
     });
   }
 
+  const actions = normalizeGroupActions(res.data.actions, params.objects, params.locale);
+  const objectUpdates = normalizeObjectUpdates(res.data.objectUpdates, params.objects);
+  const rawMsgs = normalizeMessages(res.data.messages, params.objects, "chat");
+  const messages = filterMessagesAfterActions(rawMsgs, params.objects, actions);
+
   return {
     tensionDelta: Math.max(-8, Math.min(8, Math.round(res.data.tensionDelta))),
-    messages: normalizeMessages(res.data.messages, params.objects, "chat"),
+    actions,
+    objectUpdates,
+    messages,
     provider,
     model: res.model,
     durationMs: res.durationMs,

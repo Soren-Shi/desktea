@@ -12,6 +12,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       objects?: DeskObject[];
       history?: ChatMessage[];
+      groupName?: string;
       ownerMessage?: string;
       isFirstBreach?: boolean;
       mentionedObjectIds?: string[];
@@ -35,6 +36,7 @@ export async function POST(req: Request) {
     const result = await replyToOwner({
       locale: body.locale === "en" ? "en" : "zh",
       tone,
+      groupName: body.groupName,
       objects: body.objects,
       history: Array.isArray(body.history) ? body.history : [],
       ownerMessage: body.ownerMessage.trim(),

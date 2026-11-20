@@ -17,7 +17,11 @@ import {
   browserLiveCameraTurn,
   browserReplyToOwner,
 } from "@/lib/ai/browser-gemini";
-import { getLocalTimeContext } from "@/lib/ai/normalize";
+import {
+  canObjectSpeak,
+  getLocalTimeContext,
+  getObjectStatus,
+} from "@/lib/ai/normalize";
 import type {
   AddObjectResult,
   ApiErrorCode,
@@ -28,9 +32,11 @@ import type {
   DeskObject,
   DeskSession,
   DiffResult,
+  GroupAction,
   HealthStatus,
   LiveTurnResult,
   Locale,
+  ObjectStateUpdate,
   ReplyResult,
   Tone,
 } from "@/lib/ai/types";
@@ -101,8 +107,93 @@ function makeSampleSession(sample: SampleDesk, locale: Locale): DeskSession {
 function extractMentionIds(objects: DeskObject[], text: string): string[] {
   const lower = text.toLowerCase();
   return objects
-    .filter((o) => !o.removed && lower.includes(`@${o.name.toLowerCase()}`))
+    .filter((o) => getObjectStatus(o) !== "gone" && lower.includes(`@${o.name.toLowerCase()}`))
     .map((o) => o.id);
+}
+
+function applyLivingEffectsToObjects(
+  prev: DeskObject[],
+  actions?: GroupAction[],
+  updates?: ObjectStateUpdate[]
+): DeskObject[] {
+  if ((!actions || actions.length === 0) && (!updates || updates.length === 0)) {
+    return prev;
+  }
+  const actionMap = new Map<string, GroupAction[]>();
+  for (const act of actions || []) {
+    if (!act.objectId) continue;
+    const list = actionMap.get(act.objectId) || [];
+    list.push(act);
+    actionMap.set(act.objectId, list);
+  }
+  const updateMap = new Map<string, ObjectStateUpdate>();
+  for (const upd of updates || []) {
+    if (upd.objectId) updateMap.set(upd.objectId, upd);
+  }
+
+  return prev.map((obj) => {
+    let next = obj;
+    const acts = actionMap.get(obj.id);
+    if (acts) {
+      for (const act of acts) {
+        if (act.type === "kick" || act.type === "leave") {
+          next = {
+            ...next,
+            status: "kicked",
+            removed: false,
+            mood: act.type === "leave" ? "dramatic" : "betrayed",
+            memories: [
+              ...(next.memories || []).slice(-3),
+              act.type === "kick" ? "Kicked out by Owner" : "Rage-quit the chat",
+            ],
+          };
+        } else if (act.type === "invite") {
+          next = {
+            ...next,
+            status: "active",
+            removed: false,
+            mood: "smug",
+            memories: [
+              ...(next.memories || []).slice(-3),
+              "Pulled back into the chat after exile",
+            ],
+          };
+        } else if (act.type === "mute") {
+          next = {
+            ...next,
+            status: "muted",
+            mood: "annoyed",
+            memories: [...(next.memories || []).slice(-3), "Muted by Owner"],
+          };
+        } else if (act.type === "unmute") {
+          next = {
+            ...next,
+            status: "active",
+            mood: "annoyed",
+          };
+        } else if (act.type === "set_title" && act.value) {
+          next = {
+            ...next,
+            roleTag: act.value,
+          };
+        }
+      }
+    }
+
+    const upd = updateMap.get(obj.id);
+    if (upd) {
+      const nextMemories = upd.memoryNote
+        ? [...(next.memories || []).filter((m) => m !== upd.memoryNote), upd.memoryNote].slice(-4)
+        : next.memories;
+      next = {
+        ...next,
+        mood: upd.mood,
+        memories: nextMemories,
+      };
+    }
+
+    return next;
+  });
 }
 
 function stripObjectAvatars(list: DeskObject[]): DeskObject[] {
@@ -234,8 +325,11 @@ export default function HomePage() {
 
       const savedRail = Number(localStorage.getItem("desktea_rail_width"));
       if (Number.isFinite(savedRail) && savedRail >= 360) {
-        const maxAllowed = Math.min(700, Math.round(window.innerWidth * 0.58));
-        setRailWidth(Math.min(maxAllowed, savedRail));
+        const maxAllowed =
+          window.innerWidth >= 1024
+            ? Math.max(360, Math.min(700, Math.round(window.innerWidth * 0.58)))
+            : 700;
+        setRailWidth(Math.max(360, Math.min(maxAllowed, savedRail)));
       }
 
       const savedLocale = localStorage.getItem("desktea_locale");
@@ -1173,7 +1267,7 @@ export default function HomePage() {
       ) {
         return;
       }
-      const activeObjs = objects.filter((o) => !o.removed);
+      const activeObjs = objects.filter((o) => canObjectSpeak(o));
       if (activeObjs.length < 2) return;
 
       if (!opts?.bypassCap && idleChatterTurnsRef.current >= 8) {
@@ -1232,6 +1326,7 @@ export default function HomePage() {
             apiKey: cleanKey,
             locale,
             tone,
+            groupName,
             objects,
             history: baseHistory,
             ownerPresent,
@@ -1244,6 +1339,7 @@ export default function HomePage() {
             body: JSON.stringify({
               locale,
               tone,
+              groupName,
               objects: stripObjectAvatars(objects),
               history: baseHistory,
               ownerPresent,
@@ -1274,7 +1370,32 @@ export default function HomePage() {
         setResentmentScore((prev) =>
           Math.max(0, Math.min(100, prev + (data.tensionDelta || 0)))
         );
-        setMessages((prev) => [...prev, ...data.messages]);
+
+        const renameAct = data.actions?.find(
+          (a) => a.type === "rename_group" && a.value
+        );
+        if (renameAct?.value) {
+          setGroupName(renameAct.value);
+        }
+        if (
+          (data.actions && data.actions.length > 0) ||
+          (data.objectUpdates && data.objectUpdates.length > 0)
+        ) {
+          setObjects((prev) =>
+            applyLivingEffectsToObjects(prev, data.actions, data.objectUpdates)
+          );
+        }
+
+        const actionSysMsgs: ChatMessage[] = (data.actions || []).map((a, idx) => ({
+          id: `sys-act-chat-${Date.now()}-${idx}`,
+          senderId: "system",
+          senderName: "SYSTEM",
+          text: a.systemNotice,
+          timestamp: nowHHMM(),
+          isSystem: true,
+        }));
+
+        setMessages((prev) => [...prev, ...actionSysMsgs, ...data.messages]);
       } catch (err) {
         if (opts?.bypassCap) {
           setErrorMsg(
@@ -1301,6 +1422,7 @@ export default function HomePage() {
       ownerSteppedAway,
       hasBrokenIn,
       tone,
+      groupName,
       agyModel,
       handleApiErrorResponse,
     ]
@@ -1321,7 +1443,7 @@ export default function HomePage() {
 
   // Periodic autonomous object-to-object chatter loop
   useEffect(() => {
-    const activeCount = objects.filter((o) => !o.removed).length;
+    const activeCount = objects.filter((o) => canObjectSpeak(o)).length;
     if (!autoChatEnabled || isBlankSession || activeCount < 2) {
       return;
     }
@@ -1465,6 +1587,7 @@ export default function HomePage() {
           apiKey: cleanKey,
           locale,
           tone,
+          groupName,
           objects,
           history: updatedHistory,
           ownerMessage: text,
@@ -1479,6 +1602,7 @@ export default function HomePage() {
           body: JSON.stringify({
             locale,
             tone,
+            groupName,
             objects: stripObjectAvatars(objects),
             history: updatedHistory,
             ownerMessage: text,
@@ -1503,7 +1627,35 @@ export default function HomePage() {
       setResentmentScore((prev) =>
         Math.max(0, Math.min(100, prev + (data.tensionDelta || 0)))
       );
-      setMessages((prev) => [...prev, ...data.messages]);
+
+      const renameAct = data.actions?.find(
+        (a) => a.type === "rename_group" && a.value
+      );
+      if (renameAct?.value) {
+        setGroupName(renameAct.value);
+      }
+      if (
+        (data.actions && data.actions.length > 0) ||
+        (data.objectUpdates && data.objectUpdates.length > 0)
+      ) {
+        setObjects((prev) =>
+          applyLivingEffectsToObjects(prev, data.actions, data.objectUpdates)
+        );
+        if (data.actions?.some((a) => a.type === "kick" || a.type === "leave")) {
+          setSelectedObjectId(null);
+        }
+      }
+
+      const actionSysMsgs: ChatMessage[] = (data.actions || []).map((a, idx) => ({
+        id: `sys-act-${Date.now()}-${idx}`,
+        senderId: "system",
+        senderName: "SYSTEM",
+        text: a.systemNotice,
+        timestamp: nowHHMM(),
+        isSystem: true,
+      }));
+
+      setMessages((prev) => [...prev, ...actionSysMsgs, ...data.messages]);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Failed to send reply");
     } finally {
@@ -1511,13 +1663,40 @@ export default function HomePage() {
     }
   };
 
+  const handleMemberAction = (
+    objectId: string,
+    action: "kick" | "invite" | "mute" | "unmute"
+  ) => {
+    const target = objects.find((o) => o.id === objectId);
+    if (!target || isReplying || isScanning) return;
+    const cmdText =
+      locale === "zh"
+        ? action === "kick"
+          ? `把 @${target.name} 踢出群聊`
+          : action === "invite"
+          ? `把 @${target.name} 拉回群聊`
+          : action === "mute"
+          ? `把 @${target.name} 禁言`
+          : `解除 @${target.name} 的禁言`
+        : action === "kick"
+        ? `Kick @${target.name} out of the group chat`
+        : action === "invite"
+        ? `Pull @${target.name} back into the group chat`
+        : action === "mute"
+        ? `Mute @${target.name}`
+        : `Unmute @${target.name}`;
+    handleSendOwnerMessage(cmdText);
+  };
+
   const handleSubmitAfter = async (afterDataUrl: string, mimeType: string) => {
     setIsComparing(true);
     setErrorMsg(null);
     try {
-      let beforeDataUrl = imageSrc;
+      // If shooting a second sequel, use the latest afterImageSrc as the new BEFORE baseline
+      const baselineSrc = afterImageSrc || imageSrc;
+      let beforeDataUrl = baselineSrc;
       if (!beforeDataUrl.startsWith("data:")) {
-        const compressed = await compressImageToDataUrl(imageSrc, 1280, 0.85);
+        const compressed = await compressImageToDataUrl(baselineSrc, 1280, 0.85);
         beforeDataUrl = compressed.dataUrl;
       }
 
@@ -1570,13 +1749,45 @@ export default function HomePage() {
           : [];
 
       const removedSet = new Set(data.removedIds);
+      const updatedBoxMap = new Map(
+        (data.updatedBoxes || []).map((u) => [u.id, u])
+      );
       const removedNames = objects
         .filter((o) => removedSet.has(o.id))
         .map((o) => o.name);
+      const movedNames = objects
+        .filter((o) => updatedBoxMap.get(o.id)?.status === "moved")
+        .map((o) => o.name);
       const addedNames = croppedNew.map((o) => o.name);
 
+      if (afterImageSrc) {
+        setImageSrc(afterImageSrc);
+      }
+
       setObjects((prev) => [
-        ...prev.map((o) => (removedSet.has(o.id) ? { ...o, removed: true } : o)),
+        ...prev.map((o) => {
+          const prevBox = o.box_2d;
+          if (removedSet.has(o.id)) {
+            return {
+              ...o,
+              beforeBox2d: prevBox,
+              removed: true,
+              status: "gone" as const,
+              isNew: false,
+            };
+          }
+          const updated = updatedBoxMap.get(o.id);
+          if (updated) {
+            return {
+              ...o,
+              beforeBox2d: prevBox,
+              box_2d: updated.box_2d,
+              movedInSequel: updated.status === "moved",
+              isNew: false,
+            };
+          }
+          return { ...o, beforeBox2d: prevBox, isNew: false };
+        }),
         ...croppedNew,
       ]);
 
@@ -1593,6 +1804,7 @@ export default function HomePage() {
         diffMeta: {
           removedNames,
           addedNames,
+          movedNames,
           prevScore,
           nextScore: data.resentmentScore,
         },
@@ -1711,7 +1923,7 @@ export default function HomePage() {
 
   return (
     <div
-      className={`flex min-h-dvh flex-col bg-[var(--stage)] text-[var(--ink)] lg:h-dvh lg:flex-row lg:overflow-hidden ${
+      className={`flex h-dvh flex-col overflow-hidden bg-[var(--stage)] text-[var(--ink)] lg:flex-row ${
         isResizingRail ? "select-none cursor-col-resize" : ""
       }`}
     >
@@ -1762,7 +1974,7 @@ export default function HomePage() {
       />
 
       {/* Center Serene Photographic Stage */}
-      <div className="min-w-0 flex-1 lg:h-full">
+      <div className="min-w-0 shrink-0 lg:h-full lg:flex-1">
         <DeskCanvas
           locale={locale}
           caseTitle={caseTitle}
@@ -1851,7 +2063,7 @@ export default function HomePage() {
       {/* Right Full-Height Resizable Chat Rail */}
       <div
         style={{ "--rail-w": `${railWidth}px` } as React.CSSProperties}
-        className="w-full shrink-0 lg:h-full lg:w-[var(--rail-w)]"
+        className="min-h-0 w-full flex-1 lg:h-full lg:w-[var(--rail-w)] lg:flex-none lg:shrink-0"
       >
         <GroupChatPanel
           locale={locale}
@@ -1874,7 +2086,7 @@ export default function HomePage() {
             hasBrokenIn &&
             !ownerSteppedAway &&
             !isBlankSession &&
-            objects.filter((o) => !o.removed).length >= 2
+            objects.filter((o) => canObjectSpeak(o)).length >= 2
           }
           activeObjectId={activeObjectId}
           selectedObjectId={selectedObjectId}
@@ -1890,6 +2102,7 @@ export default function HomePage() {
           onRevealAll={handleRevealAll}
           onHoverMessage={setHoveredMessageId}
           onSendOwnerMessage={handleSendOwnerMessage}
+          onMemberAction={handleMemberAction}
           onClearChat={handleClearChat}
           onDeleteMessage={handleDeleteMessage}
         />
@@ -1943,7 +2156,7 @@ export default function HomePage() {
         locale={locale}
         isOpen={isSequelOpen}
         isComparing={isComparing}
-        beforeImageSrc={imageSrc}
+        beforeImageSrc={afterImageSrc || imageSrc}
         objects={objects}
         isLiveCamActive={isLiveCamActive}
         onCaptureFromLive={() =>

@@ -21,7 +21,7 @@ const SITE_DESC =
 
 export const metadata: Metadata = {
   metadataBase: new URL(
-    process.env.NEXT_PUBLIC_SITE_URL || "https://desktea.vercel.app"
+    process.env.NEXT_PUBLIC_SITE_URL || "https://desktea.xyz"
   ),
   title: SITE_TITLE,
   description: SITE_DESC,

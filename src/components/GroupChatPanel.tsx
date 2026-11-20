@@ -1,15 +1,22 @@
 "use client";
 
 import {
+  ArrowDown,
   ArrowUp,
   AtSign,
   ChevronDown,
   Footprints,
+  Info,
   Radio,
   Trash2,
+  UserMinus,
+  UserPlus,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getObjectStatus, isObjectInChat } from "@/lib/ai/normalize";
 import type { ChatMessage, DeskObject, Locale, Tone } from "@/lib/ai/types";
 import { getCopy } from "@/lib/i18n";
 
@@ -45,6 +52,10 @@ interface GroupChatPanelProps {
   onRevealAll: () => void;
   onHoverMessage: (id: string | null) => void;
   onSendOwnerMessage: (text: string) => void;
+  onMemberAction: (
+    objectId: string,
+    action: "kick" | "invite" | "mute" | "unmute"
+  ) => void;
   onClearChat: () => void;
   onDeleteMessage: (id: string) => void;
 }
@@ -119,6 +130,7 @@ export function GroupChatPanel({
   onRevealAll,
   onHoverMessage,
   onSendOwnerMessage,
+  onMemberAction,
   onClearChat,
   onDeleteMessage,
 }: GroupChatPanelProps) {
@@ -128,7 +140,9 @@ export function GroupChatPanel({
   const [mentionStartIdx, setMentionStartIdx] = useState<number>(-1);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [verdictExpanded, setVerdictExpanded] = useState(false);
+  const [mobileInfoOpen, setMobileInfoOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
 
   useEffect(() => {
     if (!confirmClear) return;
@@ -141,23 +155,36 @@ export function GroupChatPanel({
   }, [groupName, messages.length]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isNearBottomRef = useRef(true);
+  const forceScrollRef = useRef(false);
+  const prevDisplayedLenRef = useRef(0);
 
-  const objectMap = new Map(objects.map((o) => [o.id, o]));
-  const objectNames = objects.map((o) => o.name);
+  const objectMap = useMemo(
+    () => new Map(objects.map((o) => [o.id, o])),
+    [objects]
+  );
+  const objectNames = useMemo(() => objects.map((o) => o.name), [objects]);
   const activeObjects = useMemo(
-    () => objects.filter((o) => !o.removed),
+    () => objects.filter((o) => isObjectInChat(o)),
+    [objects]
+  );
+
+  // Include kicked/muted objects in @mention picker so owner can @them to invite/unmute!
+  const mentionableObjects = useMemo(
+    () => objects.filter((o) => getObjectStatus(o) !== "gone"),
     [objects]
   );
 
   const mentionCandidates = useMemo(() => {
     if (mentionQuery === null) return [];
     const q = mentionQuery.toLowerCase();
-    return activeObjects.filter(
+    return mentionableObjects.filter(
       (o) =>
         o.name.toLowerCase().includes(q) || o.roleTag.toLowerCase().includes(q)
     );
-  }, [mentionQuery, activeObjects]);
+  }, [mentionQuery, mentionableObjects]);
 
   const sliced = messages.slice(0, visibleCount);
   const displayed = selectedObjectId
@@ -171,11 +198,62 @@ export function GroupChatPanel({
       ? messages[visibleCount]
       : null;
 
-  useEffect(() => {
+  const lastDisplayedId =
+    displayed.length > 0 ? displayed[displayed.length - 1].id : "";
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [displayed.length, isReplying, isChattering]);
+    requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+      setHasUnreadBelow(false);
+      isNearBottomRef.current = true;
+    });
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distFromBottom < 130;
+    isNearBottomRef.current = nearBottom;
+    if (nearBottom) {
+      setHasUnreadBelow(false);
+    }
+  }, []);
+
+  // Keep pinned to bottom when container resizes (e.g. mobile photo collapse/expand or keyboard)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (isNearBottomRef.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Re-anchor to bottom when switching filter back to full chat
+  useEffect(() => {
+    if (selectedObjectId === null && isNearBottomRef.current) {
+      scrollToBottom("auto");
+    }
+  }, [selectedObjectId, scrollToBottom]);
+
+  // Auto-scroll smoothly whenever new messages stream in or AI starts typing
+  useEffect(() => {
+    const grew = displayed.length > prevDisplayedLenRef.current;
+    prevDisplayedLenRef.current = displayed.length;
+
+    if (forceScrollRef.current || isNearBottomRef.current) {
+      forceScrollRef.current = false;
+      scrollToBottom("smooth");
+    } else if (grew) {
+      setHasUnreadBelow(true);
+    }
+  }, [displayed.length, lastDisplayedId, isReplying, isChattering, scrollToBottom]);
 
   const evaluateMentionTrigger = (val: string, cursorPos: number) => {
     const beforeCursor = val.slice(0, cursorPos);
@@ -221,7 +299,7 @@ export function GroupChatPanel({
   };
 
   const handleOpenMentionPicker = () => {
-    if (activeObjects.length === 0 || isScanning) return;
+    if (mentionableObjects.length === 0 || isScanning) return;
     const input = inputRef.current;
     const cursor = input?.selectionStart ?? draft.length;
     const before = draft.slice(0, cursor);
@@ -275,9 +353,16 @@ export function GroupChatPanel({
     ) {
       return;
     }
+    forceScrollRef.current = true;
     onSendOwnerMessage(cleaned);
     setDraft("");
     setMentionQuery(null);
+  };
+
+  const handleCycleTone = () => {
+    const idx = TONES.indexOf(tone);
+    const next = TONES[(idx + 1) % TONES.length];
+    onChangeTone(next);
   };
 
   const canSend =
@@ -293,26 +378,46 @@ export function GroupChatPanel({
       ? "bg-amber-400"
       : "bg-emerald-400";
 
+  const selectedObj = selectedObjectId ? objectMap.get(selectedObjectId) : null;
+  const selectedStatus = selectedObj ? getObjectStatus(selectedObj) : null;
+
   return (
-    <section className="flex h-full flex-col border-t border-[var(--border)] bg-[var(--rail)] lg:border-l lg:border-t-0">
-      {/* Streamlined Breathable Header */}
-      <div className="border-b border-[var(--border)] px-3.5 pb-2.5 pt-3 sm:px-6 lg:pb-3.5 lg:pt-4">
-        {/* Row 1: Full-width Group Title + Tension + Reveal */}
-        <div className="flex items-center justify-between gap-2.5">
-          <h1 className="min-w-0 flex-1 truncate text-[15.5px] font-semibold leading-snug tracking-[-0.02em] text-[#FAFAFA]">
-            {isScanning
-              ? t.scanningPill
-              : isBlankSession && objects.length === 0
-              ? t.brand
-              : groupName}
-          </h1>
+    <section className="relative flex h-full min-h-0 flex-col border-t border-[var(--border)] bg-[var(--rail)] lg:border-l lg:border-t-0">
+      {/* Streamlined Breathable Header (Ultra-compact 2 rows on mobile) */}
+      <div className="shrink-0 border-b border-[var(--border)] px-3.5 pb-2 pt-2.5 sm:px-6 sm:pb-3 sm:pt-3.5 lg:pb-3.5 lg:pt-4">
+        {/* Row 1: Group Title + Tension + Mobile Auto-Chat / Desktop Controls */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <h1 className="min-w-0 truncate text-[14.5px] font-semibold leading-snug tracking-[-0.02em] text-[#FAFAFA] sm:text-[15.5px]">
+              {isScanning
+                ? t.scanningPill
+                : isBlankSession && objects.length === 0
+                ? t.brand
+                : groupName}
+            </h1>
+            {!isScanning && objects.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setMobileInfoOpen((v) => !v)}
+                aria-label={t.chatInfoBtn}
+                className={`flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors sm:hidden ${
+                  mobileInfoOpen
+                    ? "bg-[var(--surface-hover)] text-white"
+                    : "text-[var(--ink-muted)] hover:text-white"
+                }`}
+              >
+                <Info className="h-3.5 w-3.5 stroke-[1.8]" />
+              </button>
+            )}
+          </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
             {!isScanning && objects.length > 0 && (
-              <span className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0.5 text-[11px] font-medium text-[#D9DBDF]">
+              <span className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[#D9DBDF] sm:px-2.5">
                 <span className={`h-1.5 w-1.5 rounded-full ${tensionDotColor}`} />
                 <span className="tabular-nums">
-                  {t.resentmentWord} {resentmentScore}%
+                  <span className="hidden sm:inline">{t.resentmentWord} </span>
+                  {resentmentScore}%
                 </span>
               </span>
             )}
@@ -320,11 +425,34 @@ export function GroupChatPanel({
               <button
                 type="button"
                 onClick={onRevealAll}
-                className="cursor-pointer rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-2.5 py-0.5 text-[11px] font-medium text-[#FAFAFA] transition-colors hover:bg-[var(--surface-hover)] active:scale-[0.97]"
+                className="cursor-pointer rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[#FAFAFA] transition-colors hover:bg-[var(--surface-hover)] active:scale-[0.97] sm:px-2.5"
               >
                 {t.revealAll}
               </button>
             )}
+            {/* Mobile compact Auto-Chat switch right in Row 1 */}
+            {!isScanning && objects.length >= 2 && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoChatEnabled}
+                onClick={onToggleAutoChat}
+                title={autoChatEnabled ? t.autoChatOnTitle : t.autoChatOffTitle}
+                className={`flex shrink-0 cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-all active:scale-[0.97] sm:hidden ${
+                  autoChatEnabled
+                    ? "border-emerald-400/55 bg-emerald-500/18 text-emerald-200 shadow-[0_0_12px_rgba(16,185,129,0.22)]"
+                    : "border-[var(--border-strong)] bg-[#1B1C22] text-[#E6E8EC]"
+                }`}
+              >
+                <Radio
+                  className={`h-3 w-3 stroke-[2] ${
+                    autoChatEnabled ? "animate-pulse text-emerald-300" : "text-[#9A9FA8]"
+                  }`}
+                />
+                <span>{t.autoChatLabel}</span>
+              </button>
+            )}
+            {/* Desktop Clear Chat button */}
             {!isScanning && messages.length > 0 && (
               <button
                 type="button"
@@ -338,7 +466,7 @@ export function GroupChatPanel({
                 }}
                 title={t.deleteChatBtn}
                 aria-label={confirmClear ? t.deleteChatConfirm : t.deleteChatBtn}
-                className={`flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors active:scale-[0.97] ${
+                className={`hidden cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors active:scale-[0.97] sm:flex ${
                   confirmClear
                     ? "border-[var(--accent)]/45 bg-[var(--accent-soft)] text-[#FF8A80]"
                     : "border-[var(--border)] bg-[var(--surface)] text-[var(--ink-secondary)] hover:border-[var(--border-strong)] hover:bg-[var(--surface-hover)] hover:text-white"
@@ -351,9 +479,46 @@ export function GroupChatPanel({
           </div>
         </div>
 
-        {/* Row 2: Member meta + Prominent Auto-Chat Switch */}
+        {/* Mobile Collapsible Info Panel (Verdict + Meta + Clear Chat) */}
+        {mobileInfoOpen && !isScanning && objects.length > 0 && (
+          <div className="mt-2 space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-[11.5px] sm:hidden">
+            <div className="flex items-center justify-between gap-2 text-[var(--ink-secondary)]">
+              <span className="truncate">
+                {activeObjects.length} {t.membersSuffix} · {t.firstToLeave}:{" "}
+                {mostLikelyToLeave}
+              </span>
+              {messages.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirmClear) {
+                      setConfirmClear(false);
+                      setMobileInfoOpen(false);
+                      onClearChat();
+                    } else {
+                      setConfirmClear(true);
+                    }
+                  }}
+                  className={`flex shrink-0 cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                    confirmClear
+                      ? "border-[var(--accent)]/45 bg-[var(--accent-soft)] text-[#FF8A80]"
+                      : "border-[var(--border)] text-[var(--ink-secondary)] hover:text-white"
+                  }`}
+                >
+                  <Trash2 className="h-3 w-3" />
+                  <span>{confirmClear ? t.deleteChatConfirm : t.deleteChatBtn}</span>
+                </button>
+              )}
+            </div>
+            {verdict && (
+              <p className="leading-relaxed text-[#D9DBDF]">{verdict}</p>
+            )}
+          </div>
+        )}
+
+        {/* Desktop Row 2: Member meta + Prominent Auto-Chat Switch */}
         {!isScanning && objects.length > 0 && (
-          <div className="mt-2 flex items-center justify-between gap-2">
+          <div className="mt-2 hidden items-center justify-between gap-2 sm:flex">
             <div className="flex min-w-0 flex-1 items-center gap-x-2 text-[11.5px] text-[var(--ink-secondary)]">
               <span className="shrink-0 whitespace-nowrap">
                 {activeObjects.length} {t.membersSuffix}
@@ -402,12 +567,12 @@ export function GroupChatPanel({
           </div>
         )}
 
-        {/* Click-to-expand single-line Verdict */}
+        {/* Desktop Click-to-expand single-line Verdict */}
         {!isScanning && verdict && objects.length > 0 && (
           <button
             type="button"
             onClick={() => setVerdictExpanded((v) => !v)}
-            className="mt-2 flex w-full cursor-pointer items-start gap-1.5 text-left text-[12px] leading-[1.5] text-[var(--ink-secondary)] transition-colors hover:text-[#D9DBDF]"
+            className="mt-2 hidden w-full cursor-pointer items-start gap-1.5 text-left text-[12px] leading-[1.5] text-[var(--ink-secondary)] transition-colors hover:text-[#D9DBDF] sm:flex"
           >
             <span className={verdictExpanded ? "" : "line-clamp-1"}>
               {verdict}
@@ -422,9 +587,10 @@ export function GroupChatPanel({
 
         {/* Interactive Cropped-Avatar Cast Roster */}
         {!isScanning && objects.length > 0 && (
-          <div className="mt-2.5 flex items-center justify-between gap-2">
+          <div className="mt-2 flex items-center justify-between gap-2 sm:mt-2.5">
             <div className="no-scrollbar flex items-center gap-2 overflow-x-auto py-0.5">
               {objects.map((obj) => {
+                const st = getObjectStatus(obj);
                 const isSelected = selectedObjectId === obj.id;
                 const isHovered = activeObjectId === obj.id;
                 const isSpeaking = speakingObjectId === obj.id;
@@ -435,10 +601,22 @@ export function GroupChatPanel({
                     onMouseEnter={() => onHoverObject(obj.id)}
                     onMouseLeave={() => onHoverObject(null)}
                     onClick={() => onSelectObject(isSelected ? null : obj.id)}
-                    title={`${obj.name} · ${obj.roleTag}`}
+                    title={`${obj.name} · ${obj.roleTag}${
+                      st === "kicked"
+                        ? ` (${t.statusKicked})`
+                        : st === "muted"
+                        ? ` (${t.statusMuted})`
+                        : st === "gone"
+                        ? ` (${t.statusGone})`
+                        : ""
+                    }`}
                     aria-label={obj.name}
-                    className={`relative h-8 w-8 shrink-0 cursor-pointer overflow-hidden rounded-full transition-transform duration-150 active:scale-95 sm:h-7 sm:w-7 ${
-                      obj.removed ? "opacity-40 grayscale" : ""
+                    className={`relative h-7 w-7 shrink-0 cursor-pointer overflow-hidden rounded-full transition-transform duration-150 active:scale-95 ${
+                      st === "gone" || st === "kicked"
+                        ? "opacity-40 grayscale"
+                        : st === "muted"
+                        ? "opacity-65"
+                        : ""
                     } ${
                       isSelected || isSpeaking
                         ? "scale-105 ring-2 ring-[var(--accent)]"
@@ -455,6 +633,14 @@ export function GroupChatPanel({
                       />
                     ) : (
                       <span className="block h-full w-full bg-white/10" />
+                    )}
+                    {st === "muted" && (
+                      <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-amber-300">
+                        <VolumeX className="h-3 w-3" />
+                      </span>
+                    )}
+                    {st === "kicked" && (
+                      <span className="absolute inset-x-0 bottom-0 h-1.5 bg-[var(--accent)]/90" />
                     )}
                   </button>
                 );
@@ -478,30 +664,110 @@ export function GroupChatPanel({
           </div>
         )}
 
-        {selectedObjectId && objectMap.get(selectedObjectId) && (
-          <div className="mt-2.5 flex items-center justify-between gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-[11.5px]">
-            <span className="truncate font-medium text-[#FAFAFA]">
-              {t.filteredBy}: {objectMap.get(selectedObjectId)?.name}
-            </span>
-            <div className="flex shrink-0 items-center gap-2">
-              {!objectMap.get(selectedObjectId)?.removed && (
+        {/* Selected Object Spotlight & Member Power Bar (Kick / Pull Back / Mute / @Mention) */}
+        {selectedObj && selectedStatus && (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-[11.5px]">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate font-medium text-[#FAFAFA]">
+                {selectedObj.name}
+              </span>
+              {selectedStatus === "kicked" && (
+                <span className="shrink-0 rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] text-[#FF8A80]">
+                  {t.statusKicked}
+                </span>
+              )}
+              {selectedStatus === "muted" && (
+                <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">
+                  {t.statusMuted}
+                </span>
+              )}
+              {selectedStatus === "gone" && (
+                <span className="shrink-0 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-[var(--ink-secondary)]">
+                  {t.statusGone}
+                </span>
+              )}
+              {selectedStatus === "active" && selectedObj.mood && (
+                <span className="shrink-0 rounded-full bg-white/[0.07] px-1.5 py-0.5 text-[10px] text-[var(--ink-secondary)]">
+                  {t.moodLabels[selectedObj.mood]}
+                </span>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1">
+              {selectedStatus !== "gone" && (
                 <button
                   type="button"
-                  onClick={() => {
-                    const target = objectMap.get(selectedObjectId);
-                    if (target) insertMentionObject(target);
-                  }}
+                  onClick={() => insertMentionObject(selectedObj)}
                   className="cursor-pointer rounded-full bg-[var(--surface-hover)] px-2 py-0.5 text-[11px] font-medium text-[#FF7A70] hover:text-white"
                 >
                   {t.mentionThis}
                 </button>
               )}
+
+              {selectedStatus === "active" && (
+                <>
+                  <button
+                    type="button"
+                    disabled={isReplying || isScanning}
+                    onClick={() => onMemberAction(selectedObj.id, "mute")}
+                    className="flex cursor-pointer items-center gap-1 rounded-full border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--ink-secondary)] hover:bg-[var(--surface-hover)] hover:text-white disabled:opacity-40"
+                  >
+                    <VolumeX className="h-3 w-3" />
+                    <span>{t.muteBtn}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isReplying || isScanning}
+                    onClick={() => onMemberAction(selectedObj.id, "kick")}
+                    className="flex cursor-pointer items-center gap-1 rounded-full border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] text-[#FF8A80] hover:text-white disabled:opacity-40"
+                  >
+                    <UserMinus className="h-3 w-3" />
+                    <span>{t.kickBtn}</span>
+                  </button>
+                </>
+              )}
+
+              {selectedStatus === "muted" && (
+                <>
+                  <button
+                    type="button"
+                    disabled={isReplying || isScanning}
+                    onClick={() => onMemberAction(selectedObj.id, "unmute")}
+                    className="flex cursor-pointer items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300 hover:text-white disabled:opacity-40"
+                  >
+                    <Volume2 className="h-3 w-3" />
+                    <span>{t.unmuteBtn}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isReplying || isScanning}
+                    onClick={() => onMemberAction(selectedObj.id, "kick")}
+                    className="flex cursor-pointer items-center gap-1 rounded-full border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] text-[#FF8A80] hover:text-white disabled:opacity-40"
+                  >
+                    <UserMinus className="h-3 w-3" />
+                    <span>{t.kickBtn}</span>
+                  </button>
+                </>
+              )}
+
+              {(selectedStatus === "kicked" || selectedStatus === "gone") && (
+                <button
+                  type="button"
+                  disabled={isReplying || isScanning}
+                  onClick={() => onMemberAction(selectedObj.id, "invite")}
+                  className="flex cursor-pointer items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300 hover:text-white disabled:opacity-40"
+                >
+                  <UserPlus className="h-3 w-3" />
+                  <span>{t.inviteBackBtn}</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={onClearFilter}
-                className="flex cursor-pointer items-center gap-1 text-[var(--ink-secondary)] hover:text-white"
+                aria-label={t.showAllFilter}
+                className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-white/10 hover:text-white"
               >
-                <span>{t.showAllFilter}</span>
                 <X className="h-3 w-3" />
               </button>
             </div>
@@ -509,10 +775,11 @@ export function GroupChatPanel({
         )}
       </div>
 
-      {/* Scrollable Transcript Stream */}
+      {/* Scrollable Transcript Stream (ALWAYS dedicated scroll box on mobile & desktop) */}
       <div
         ref={scrollRef}
-        className="min-h-[240px] flex-1 space-y-3.5 overflow-y-auto px-3.5 py-3 sm:space-y-4 sm:px-6 sm:py-4"
+        onScroll={handleScroll}
+        className="min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain px-3.5 py-3 sm:space-y-4 sm:px-6 sm:py-4"
       >
         {isScanning ? (
           <div className="space-y-4 py-4">
@@ -542,8 +809,13 @@ export function GroupChatPanel({
               const sender = objectMap.get(msg.senderId);
 
               if (msg.isSystem && msg.diffMeta) {
-                const { removedNames, addedNames, prevScore, nextScore } =
-                  msg.diffMeta;
+                const {
+                  removedNames,
+                  addedNames,
+                  movedNames = [],
+                  prevScore,
+                  nextScore,
+                } = msg.diffMeta;
                 return (
                   <div
                     key={msg.id}
@@ -560,7 +832,9 @@ export function GroupChatPanel({
                     <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-body)]">
                       {msg.text}
                     </p>
-                    {(removedNames.length > 0 || addedNames.length > 0) && (
+                    {(removedNames.length > 0 ||
+                      addedNames.length > 0 ||
+                      movedNames.length > 0) && (
                       <div className="mt-2.5 flex flex-wrap gap-1.5">
                         {removedNames.map((n) => (
                           <span
@@ -576,6 +850,14 @@ export function GroupChatPanel({
                             className="rounded-full border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] text-emerald-300"
                           >
                             {n} · {t.sequelAddedTag}
+                          </span>
+                        ))}
+                        {movedNames.map((n) => (
+                          <span
+                            key={`mov-${n}`}
+                            className="rounded-full border border-amber-400/25 bg-amber-500/10 px-2.5 py-0.5 text-[11px] text-amber-200"
+                          >
+                            {n} · {t.sequelMovedTag}
                           </span>
                         ))}
                       </div>
@@ -714,22 +996,42 @@ export function GroupChatPanel({
                 </span>
               </div>
             )}
+            <div ref={bottomRef} className="h-1 shrink-0" />
           </>
         )}
       </div>
 
+      {/* Floating Jump-to-Latest Pill when user scrolled up */}
+      {hasUnreadBelow && (
+        <div className="pointer-events-none absolute bottom-[126px] left-1/2 z-30 -translate-x-1/2 sm:bottom-[152px]">
+          <button
+            type="button"
+            onClick={() => scrollToBottom("smooth")}
+            className="pointer-events-auto flex cursor-pointer items-center gap-1 rounded-full border border-white/20 bg-[#1B1C22]/95 px-3 py-1 text-[11.5px] font-medium text-white shadow-xl backdrop-blur-md transition-transform hover:scale-105 active:scale-95"
+          >
+            <ArrowDown className="h-3 w-3" />
+            <span>{t.jumpToLatest}</span>
+          </button>
+        </div>
+      )}
+
       {/* Signature Grok-Inspired Unified Floating Pill Composer */}
-      <div className="sticky bottom-0 z-20 border-t border-[var(--border)]/60 bg-[var(--rail)]/95 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2.5 backdrop-blur-md sm:px-5 sm:pb-4 lg:static">
-        {objects.length > 0 && (
+      <div className="shrink-0 border-t border-[var(--border)]/60 bg-[var(--rail)]/95 px-3 pb-[calc(0.65rem+env(safe-area-inset-bottom))] pt-2 backdrop-blur-md sm:px-5 sm:pb-4 sm:pt-2.5">
+        {objects.length > 0 && !draft.trim() && (
           <div className="no-scrollbar mb-2 flex flex-nowrap gap-1.5 overflow-x-auto sm:mb-2.5 sm:flex-wrap sm:overflow-visible">
             {[...quickReplies.slice(0, 2), ...situationalPrompts.slice(0, 2)].map(
-              (preset) => (
+              (preset, idx) => (
                 <button
                   key={preset}
                   type="button"
                   disabled={isReplying || isScanning}
-                  onClick={() => onSendOwnerMessage(preset)}
-                  className="shrink-0 cursor-pointer whitespace-nowrap rounded-full border border-[var(--border)] bg-transparent px-3 py-1 text-[11.5px] text-[#9A9FA8] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--surface)] hover:text-white active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-35"
+                  onClick={() => {
+                    forceScrollRef.current = true;
+                    onSendOwnerMessage(preset);
+                  }}
+                  className={`shrink-0 cursor-pointer whitespace-nowrap rounded-full border border-[var(--border)] bg-transparent px-3 py-1 text-[11.5px] text-[#9A9FA8] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--surface)] hover:text-white active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-35 ${
+                    idx >= 2 ? "hidden sm:inline-flex" : ""
+                  }`}
                 >
                   {preset}
                 </button>
@@ -744,6 +1046,7 @@ export function GroupChatPanel({
             <div className="absolute bottom-full left-0 right-0 z-40 mb-2 max-h-72 overflow-y-auto rounded-2xl border border-[var(--border-strong)] bg-[#161619]/98 p-1.5 shadow-2xl backdrop-blur-xl">
               {mentionCandidates.map((obj, idx) => {
                 const highlighted = idx === mentionIndex;
+                const st = getObjectStatus(obj);
                 return (
                   <button
                     key={obj.id}
@@ -759,7 +1062,11 @@ export function GroupChatPanel({
                         : "text-[#D9DBDF] hover:bg-[var(--surface)]"
                     }`}
                   >
-                    <div className="h-6 w-6 shrink-0 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className={`h-6 w-6 shrink-0 overflow-hidden rounded-full bg-white/10 ${
+                        st === "kicked" ? "opacity-50 grayscale" : ""
+                      }`}
+                    >
                       {obj.avatarUrl && (
                         <img
                           src={obj.avatarUrl}
@@ -772,7 +1079,11 @@ export function GroupChatPanel({
                       {obj.name}
                     </span>
                     <span className="ml-auto shrink-0 text-[11px] text-[var(--ink-secondary)]">
-                      {obj.roleTag}
+                      {st === "kicked"
+                        ? t.statusKicked
+                        : st === "muted"
+                        ? t.statusMuted
+                        : obj.roleTag}
                     </span>
                   </button>
                 );
@@ -783,7 +1094,7 @@ export function GroupChatPanel({
           {/* Unified Floating Card */}
           <form
             onSubmit={handleSubmit}
-            className="rounded-[22px] border border-[var(--border-strong)]/80 bg-[var(--surface)] p-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] transition-colors focus-within:border-white/30"
+            className="rounded-[20px] border border-[var(--border-strong)]/80 bg-[var(--surface)] p-2 shadow-[0_8px_32px_rgba(0,0,0,0.45)] transition-colors focus-within:border-white/30 sm:rounded-[22px] sm:p-2.5"
           >
             <input
               ref={inputRef}
@@ -811,15 +1122,15 @@ export function GroupChatPanel({
                 (!isLiveCamActive && objects.length === 0)
               }
               placeholder={t.composerPlaceholder}
-              className="w-full bg-transparent px-2 py-1.5 text-[16px] text-white placeholder:text-[var(--ink-muted)] focus:outline-none disabled:opacity-50 sm:text-[13.5px]"
+              className="w-full bg-transparent px-2 py-1 text-[16px] text-white placeholder:text-[var(--ink-muted)] focus:outline-none disabled:opacity-50 sm:py-1.5 sm:text-[13.5px]"
             />
 
             {/* Bottom Asymmetric Action Row inside Composer Card */}
-            <div className="mt-1.5 flex items-center justify-between gap-2">
+            <div className="mt-1 flex items-center justify-between gap-2 sm:mt-1.5">
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
-                  disabled={activeObjects.length === 0 || isScanning}
+                  disabled={mentionableObjects.length === 0 || isScanning}
                   onClick={handleOpenMentionPicker}
                   title="@"
                   aria-label="Mention object"
@@ -828,9 +1139,19 @@ export function GroupChatPanel({
                   <AtSign className="h-3.5 w-3.5 stroke-[2]" />
                 </button>
 
-                {/* Inline Tone Mode Segmented Pill inside Composer */}
+                {/* Mobile Compact Single-Tap Tone Cycler */}
+                <button
+                  type="button"
+                  onClick={handleCycleTone}
+                  className="flex cursor-pointer items-center gap-1 rounded-full border border-[var(--border)] bg-[#101012] px-2.5 py-1 text-[11px] font-medium text-[#E6E8EC] transition-colors active:scale-[0.97] sm:hidden"
+                >
+                  <span>{t.toneLabels[tone]}</span>
+                  <ChevronDown className="h-3 w-3 text-[var(--ink-secondary)]" />
+                </button>
+
+                {/* Desktop Inline Tone Mode Segmented Pill */}
                 <div
-                  className="flex items-center rounded-full border border-[var(--border)] bg-[#101012] p-0.5"
+                  className="hidden items-center rounded-full border border-[var(--border)] bg-[#101012] p-0.5 sm:flex"
                   role="group"
                   aria-label="Comedy tone"
                 >

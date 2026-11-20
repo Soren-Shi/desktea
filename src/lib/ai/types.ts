@@ -21,6 +21,45 @@ export type Box2D = [number, number, number, number];
 
 export type Archetype = "laborer" | "dust" | "consumable" | "observer";
 
+export type ObjectStatus = "active" | "kicked" | "muted" | "gone";
+
+export type ObjectMood =
+  | "chill"
+  | "annoyed"
+  | "panicked"
+  | "smug"
+  | "betrayed"
+  | "dramatic";
+
+export type GroupActionType =
+  | "kick"
+  | "invite"
+  | "mute"
+  | "unmute"
+  | "rename_group"
+  | "set_title"
+  | "leave";
+
+export interface GroupAction {
+  type: GroupActionType;
+  objectId?: string;
+  value?: string;
+  systemNotice: string;
+}
+
+export interface ObjectStateUpdate {
+  objectId: string;
+  mood: ObjectMood;
+  memoryNote?: string;
+}
+
+export interface DiffObjectAudit {
+  id: string;
+  status: "kept" | "moved" | "removed";
+  evidence: string;
+  afterBox2d?: Box2D;
+}
+
 export interface DeskObject {
   id: string;
   index: number;
@@ -29,14 +68,20 @@ export interface DeskObject {
   archetype: Archetype;
   personality: string;
   box_2d: Box2D;
+  beforeBox2d?: Box2D;
   avatarUrl?: string;
   removed?: boolean;
+  status?: ObjectStatus;
+  mood?: ObjectMood;
+  memories?: string[];
+  movedInSequel?: boolean;
   isNew?: boolean;
 }
 
 export interface DiffMeta {
   removedNames: string[];
   addedNames: string[];
+  movedNames?: string[];
   prevScore: number;
   nextScore: number;
 }
@@ -69,6 +114,8 @@ export interface DeskAnalysisResult {
 export interface ReplyResult {
   messages: ChatMessage[];
   tensionDelta: number;
+  actions?: GroupAction[];
+  objectUpdates?: ObjectStateUpdate[];
   provider: ProviderName;
   model: string;
   durationMs: number;
@@ -77,6 +124,8 @@ export interface ReplyResult {
 export interface DiffResult {
   summary: string;
   removedIds: string[];
+  updatedBoxes?: Array<{ id: string; box_2d: Box2D; status: "kept" | "moved" }>;
+  objectAudits?: DiffObjectAudit[];
   newObjects: DeskObject[];
   messages: ChatMessage[];
   resentmentScore: number;
@@ -108,6 +157,8 @@ export interface LiveTurnResult {
 export interface ChatterResult {
   messages: ChatMessage[];
   tensionDelta: number;
+  actions?: GroupAction[];
+  objectUpdates?: ObjectStateUpdate[];
   provider: ProviderName;
   model: string;
   durationMs: number;

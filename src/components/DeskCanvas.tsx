@@ -2,7 +2,10 @@
 
 import {
   Camera,
+  ChevronDown,
+  ChevronUp,
   GitCompare,
+  MoreHorizontal,
   PanelLeft,
   Play,
   RotateCw,
@@ -13,6 +16,7 @@ import {
   VideoOff,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { getObjectStatus } from "@/lib/ai/normalize";
 import type { Box2D, DeskObject, Locale } from "@/lib/ai/types";
 import { cropSingleBoxFromSrc } from "@/lib/crop-avatars";
 import { getCopy } from "@/lib/i18n";
@@ -129,9 +133,12 @@ export function DeskCanvas({
     "after"
   );
   const [splitPct, setSplitPct] = useState(50);
+  const [isMobileCollapsed, setIsMobileCollapsed] = useState(false);
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
 
   // Draw-box state
   const photoWrapperRef = useRef<HTMLDivElement>(null);
+  const mobileMoreRef = useRef<HTMLDivElement>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const [draftBox, setDraftBox] = useState<Box2D | null>(null);
   const [pendingBox, setPendingBox] = useState<{
@@ -148,12 +155,42 @@ export function DeskCanvas({
     selectedObjectId ||
     speakingObjectId;
 
+  const getBoxForPlate = (o: DeskObject): Box2D => {
+    if (afterImageSrc && plateView === "before") {
+      return o.beforeBox2d || o.box_2d;
+    }
+    return o.box_2d;
+  };
+
   const visibleObjects = objects.filter((o) => {
-    if (isLiveCamActive) return !o.removed;
-    if (afterImageSrc && plateView === "after") return !o.removed;
+    const st = getObjectStatus(o);
+    if (isLiveCamActive) return st !== "gone" && !o.removed;
+    if (afterImageSrc && plateView === "after") return st !== "gone" && !o.removed;
     if (afterImageSrc && plateView === "before") return !o.isNew;
-    return !o.removed;
+    return st !== "gone" && !o.removed;
   });
+
+  // Auto-expand photo on mobile if entering draw mode, live cam, scanning, or blank session
+  useEffect(() => {
+    if (isDrawMode || isLiveCamActive || isScanning || isBlankSession) {
+      setIsMobileCollapsed(false);
+    }
+  }, [isDrawMode, isLiveCamActive, isScanning, isBlankSession]);
+
+  // Close mobile tools menu on outside tap
+  useEffect(() => {
+    if (!isMobileMoreOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (
+        mobileMoreRef.current &&
+        !mobileMoreRef.current.contains(e.target as Node)
+      ) {
+        setIsMobileMoreOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, [isMobileMoreOpen]);
 
   // Reset draw state when leaving draw mode
   useEffect(() => {
@@ -296,7 +333,7 @@ export function DeskCanvas({
   const activeBox = pendingBox?.box || draftBox;
 
   return (
-    <div className="relative flex h-full w-full flex-col justify-between overflow-hidden bg-[var(--stage)] px-3 pb-2.5 pt-2.5 sm:px-6 sm:pb-4 sm:pt-3.5 lg:px-8 lg:pb-5 lg:pt-4">
+    <div className="relative flex w-full flex-col justify-between overflow-visible bg-[var(--stage)] px-3 pb-2 pt-2 sm:px-6 sm:pb-3.5 sm:pt-3.5 lg:h-full lg:overflow-hidden lg:px-8 lg:pb-5 lg:pt-4">
       {/* Subtle Adaptive Ambient Glow behind Photograph */}
       {!isBlankSession && imageSrc && (
         <div
@@ -323,12 +360,12 @@ export function DeskCanvas({
           >
             <PanelLeft className="h-4 w-4 stroke-[1.75]" />
           </button>
-          <span className="truncate text-[13px] font-medium tracking-[-0.01em] text-[#9A9FA8] sm:text-[13.5px]">
+          <span className="truncate text-[13px] font-medium tracking-[-0.01em] text-[#D9DBDF] sm:text-[13.5px] sm:text-[#9A9FA8]">
             {caseTitle}
           </span>
         </div>
 
-        {/* Right: Locale + Live Cam + Share pills */}
+        {/* Right: Locale + Live Cam (desktop) + Share */}
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
@@ -342,10 +379,10 @@ export function DeskCanvas({
           <button
             type="button"
             onClick={onToggleLiveCam}
-            className={`flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11.5px] font-medium transition-colors active:scale-[0.97] sm:px-3 sm:text-[12px] ${
+            className={`cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11.5px] font-medium transition-colors active:scale-[0.97] sm:flex sm:px-3 sm:text-[12px] ${
               isLiveCamActive
-                ? "border-[var(--accent)]/50 bg-[var(--accent)] text-white"
-                : "border-[var(--border)] bg-[var(--surface)]/85 text-[#D9DBDF] hover:bg-[var(--surface-hover)] hover:text-white"
+                ? "flex border-[var(--accent)]/50 bg-[var(--accent)] text-white"
+                : "hidden border-[var(--border)] bg-[var(--surface)]/85 text-[#D9DBDF] hover:bg-[var(--surface-hover)] hover:text-white"
             }`}
           >
             {isLiveCamActive ? (
@@ -360,16 +397,64 @@ export function DeskCanvas({
             type="button"
             disabled={isScanning || isBlankSession || objects.length === 0}
             onClick={onOpenShareCard}
-            className="flex cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-1.5 text-[11.5px] font-medium text-[#FAFAFA] transition-colors hover:bg-[var(--surface-hover)] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-35 sm:px-3.5 sm:text-[12px]"
+            aria-label={t.shareToX}
+            className="flex cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-2.5 py-1.5 text-[11.5px] font-medium text-[#FAFAFA] transition-colors hover:bg-[var(--surface-hover)] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-35 sm:px-3.5 sm:text-[12px]"
           >
             <Share2 className="h-3.5 w-3.5 stroke-[1.75]" />
-            <span>{t.shareToX}</span>
+            <span className="hidden sm:inline">{t.shareToX}</span>
           </button>
         </div>
       </header>
 
+      {/* Mobile Collapsed Photo Strip (< lg only) */}
+      {isMobileCollapsed && !isBlankSession && !isLiveCamActive && (
+        <div className="relative z-20 mt-2 flex items-center justify-between gap-2 rounded-2xl border border-[var(--border)] bg-[#131315]/90 px-2.5 py-1.5 backdrop-blur-md lg:hidden">
+          <button
+            type="button"
+            onClick={() => setIsMobileCollapsed(false)}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left"
+          >
+            {displaySrc && (
+              <img
+                src={displaySrc}
+                alt=""
+                className="h-7 w-10 shrink-0 rounded-lg object-cover ring-1 ring-white/15"
+              />
+            )}
+            <span className="truncate text-[12px] font-medium text-[#D9DBDF]">
+              {t.mobileShowPhoto}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--ink-secondary)]" />
+          </button>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onUploadClick}
+              className="cursor-pointer rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#0A0A0A]"
+            >
+              {t.tryYourDesk}
+            </button>
+            <button
+              type="button"
+              disabled={isScanning || objects.length === 0}
+              onClick={onOpenSequel}
+              className="cursor-pointer rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-medium text-[#FAFAFA] disabled:opacity-35"
+            >
+              {t.sequelBtn}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Center Stage: Blank Session / Live Camera / Framed Photo */}
-      <div className="relative z-10 flex min-h-0 flex-1 items-center justify-center py-2 sm:py-4">
+      <div
+        className={`relative z-10 min-h-0 flex-1 items-center justify-center py-2 sm:py-3 lg:flex lg:py-4 ${
+          isMobileCollapsed && !isBlankSession && !isLiveCamActive
+            ? "hidden"
+            : "flex"
+        }`}
+      >
         {isLiveCamActive ? (
           <div className="relative inline-block max-w-full">
             <video
@@ -539,7 +624,7 @@ export function DeskCanvas({
               src={displaySrc}
               alt="Desk scene"
               draggable={false}
-              className={`block h-auto max-h-[34dvh] w-auto max-w-full rounded-2xl shadow-[0_28px_80px_-20px_rgba(0,0,0,0.92)] ring-1 ring-white/[0.1] transition-opacity duration-300 sm:max-h-[44dvh] lg:max-h-[calc(100dvh-152px)] ${
+              className={`block h-auto max-h-[24dvh] w-auto max-w-full rounded-2xl shadow-[0_28px_80px_-20px_rgba(0,0,0,0.92)] ring-1 ring-white/[0.1] transition-opacity duration-300 sm:max-h-[34dvh] lg:max-h-[calc(100dvh-152px)] ${
                 isScanning ? "opacity-55" : "opacity-100"
               }`}
             />
@@ -701,7 +786,7 @@ export function DeskCanvas({
               visibleObjects.map((obj) => {
                 const isFocused = focusedId === obj.id;
                 if (!isFocused) return null;
-                const [ymin, xmin, ymax, xmax] = obj.box_2d;
+                const [ymin, xmin, ymax, xmax] = getBoxForPlate(obj);
                 return (
                   <div
                     key={`frame-${obj.id}`}
@@ -720,9 +805,10 @@ export function DeskCanvas({
             {!isScanning &&
               plateView !== "split" &&
               visibleObjects.map((obj) => {
-                const [ymin, xmin, ymax, xmax] = obj.box_2d;
+                const [ymin, xmin, ymax, xmax] = getBoxForPlate(obj);
                 const cx = Math.max(5, Math.min(95, (xmin + xmax) / 20));
                 const cy = Math.max(7, Math.min(93, (ymin + ymax) / 20));
+                const objStatus = getObjectStatus(obj);
                 const isSelected = selectedObjectId === obj.id;
                 const isHovered = activeObjectId === obj.id;
                 const isSpeaking = speakingObjectId === obj.id;
@@ -743,7 +829,11 @@ export function DeskCanvas({
                     key={obj.id}
                     style={{ left: `${cx}%`, top: `${cy}%` }}
                     className={`absolute -translate-x-1/2 -translate-y-1/2 ${
-                      isDrawMode ? "pointer-events-none opacity-25" : ""
+                      isDrawMode
+                        ? "pointer-events-none opacity-25"
+                        : objStatus === "kicked"
+                        ? "opacity-45"
+                        : ""
                     } ${hasSpeechBubble ? "z-40" : isFocused ? "z-30" : "z-20"}`}
                   >
                     <button
@@ -908,8 +998,124 @@ export function DeskCanvas({
           </div>
         )}
 
-        {/* Minimal Grok-Style Single-Row Swipeable Floating Bottom Dock */}
-        <div className="no-scrollbar flex w-fit max-w-full flex-nowrap items-center gap-1 overflow-x-auto rounded-full border border-[var(--border)] bg-[#131315]/92 p-1.5 shadow-[0_16px_48px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:gap-1.5">
+        {/* Mobile Simplified 3-Pill Bar (< lg only, when photo expanded) */}
+        {!isMobileCollapsed && (
+          <div className="relative flex w-full items-center justify-center gap-1.5 lg:hidden">
+            <div className="flex items-center gap-1 rounded-full border border-[var(--border)] bg-[#131315]/92 p-1 shadow-[0_12px_36px_rgba(0,0,0,0.65)] backdrop-blur-xl">
+              <button
+                type="button"
+                onClick={onUploadClick}
+                className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full bg-white px-3 py-1.5 text-[11.5px] font-semibold text-[#0A0A0A] active:scale-[0.97]"
+              >
+                <Upload className="h-3.5 w-3.5 stroke-[2]" />
+                <span>{t.tryYourDesk}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isScanning || isBlankSession || objects.length === 0}
+                onClick={onOpenSequel}
+                className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-1.5 text-[11.5px] font-medium text-[#FAFAFA] active:scale-[0.97] disabled:opacity-35"
+              >
+                <GitCompare className="h-3.5 w-3.5 stroke-[1.75]" />
+                <span>{t.sequelBtn}</span>
+              </button>
+
+              <div ref={mobileMoreRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsMobileMoreOpen((v) => !v)}
+                  aria-label={t.mobileMoreTools}
+                  className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-full transition-colors ${
+                    isMobileMoreOpen || isDrawMode
+                      ? "bg-white text-[#0A0A0A]"
+                      : "text-[#D9DBDF] hover:bg-[var(--surface-hover)] hover:text-white"
+                  }`}
+                >
+                  <MoreHorizontal className="h-4 w-4 stroke-[1.8]" />
+                </button>
+
+                {isMobileMoreOpen && (
+                  <div className="modal-enter absolute bottom-full right-0 z-50 mb-2 w-44 rounded-2xl border border-[var(--border-strong)] bg-[#151518]/98 p-1.5 shadow-2xl backdrop-blur-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMoreOpen(false);
+                        onCameraClick();
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12.5px] text-[#FAFAFA] hover:bg-[var(--surface-hover)]"
+                    >
+                      <Camera className="h-3.5 w-3.5 text-[var(--ink-secondary)]" />
+                      <span>{t.takePhoto}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isScanning || isBlankSession || isLiveCamActive}
+                      onClick={() => {
+                        setIsMobileMoreOpen(false);
+                        onToggleDrawMode();
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12.5px] text-[#FAFAFA] hover:bg-[var(--surface-hover)] disabled:opacity-35"
+                    >
+                      <SquareDashedMousePointer className="h-3.5 w-3.5 text-[var(--ink-secondary)]" />
+                      <span>{t.boxItemBtn}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isScanning || isBlankSession}
+                      onClick={() => {
+                        setIsMobileMoreOpen(false);
+                        onReplay();
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12.5px] text-[#FAFAFA] hover:bg-[var(--surface-hover)] disabled:opacity-35"
+                    >
+                      <Play className="h-3.5 w-3.5 text-[var(--ink-secondary)]" />
+                      <span>{isReplaying ? t.replaying : t.replay}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMoreOpen(false);
+                        onToggleLiveCam();
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12.5px] text-[#FAFAFA] hover:bg-[var(--surface-hover)]"
+                    >
+                      <Video className="h-3.5 w-3.5 text-[var(--ink-secondary)]" />
+                      <span>{isLiveCamActive ? t.liveExit : t.liveCamBtn}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isScanning || isBlankSession || isLiveCamActive}
+                      onClick={() => {
+                        setIsMobileMoreOpen(false);
+                        onReanalyzeLive();
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12.5px] text-[#FAFAFA] hover:bg-[var(--surface-hover)] disabled:opacity-35"
+                    >
+                      <RotateCw className="h-3.5 w-3.5 text-[var(--ink-secondary)]" />
+                      <span>{t.reanalyzeLive}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {!isBlankSession && !isLiveCamActive && (
+                <button
+                  type="button"
+                  onClick={() => setIsMobileCollapsed(true)}
+                  title={t.mobileHidePhoto}
+                  aria-label={t.mobileHidePhoto}
+                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-[var(--ink-secondary)] hover:bg-[var(--surface-hover)] hover:text-white"
+                >
+                  <ChevronUp className="h-4 w-4 stroke-[1.8]" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Desktop Minimal Grok-Style Single-Row Floating Bottom Dock */}
+        <div className="no-scrollbar hidden w-fit max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto rounded-full border border-[var(--border)] bg-[#131315]/92 p-1.5 shadow-[0_16px_48px_rgba(0,0,0,0.7)] backdrop-blur-xl lg:flex">
           <button
             type="button"
             onClick={onUploadClick}
